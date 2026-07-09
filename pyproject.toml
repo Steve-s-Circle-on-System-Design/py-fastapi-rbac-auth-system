@@ -1,0 +1,72 @@
+[project]
+name = "py-fastapi-rbac-auth-system"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "alembic>=1.18.5",
+    "asyncpg>=0.31.0",
+    "fastapi[standard]>=0.139.0",
+    "psycopg[binary]>=3.3.4",
+    "python-dotenv>=1.2.2",
+    "ruff>=0.15.20",
+    "sqlalchemy>=2.0.51",
+    "uvicorn>=0.51.0",
+]
+
+[tool.ruff]
+# Target Python version
+target-version = "py311"
+# Set the maximum line length (FastAPI/Black standard is usually 88 or 100)
+line-length = 88
+
+[tool.ruff.lint]
+# Core rules for a robust FastAPI project
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort (auto-sorts imports)
+    "B",    # flake8-bugbear (catches common bugs)
+    "UP",   # pyupgrade (forces modern Python syntax)
+    "FAST", # FastAPI-specific rules (e.g., FAST001, FAST002)
+    "RUF",  # Ruff-specific rules (includes Pydantic typing & mutable defaults checks)
+    "UP",   # Pyupgrade (catches deprecated Pydantic syntax)
+]
+
+ignore = []
+
+[tool.ruff.lint.isort]
+# Combines multiple imports from the same module onto a single line
+combine-as-imports = true
+
+[tool.ruff.format]
+# Enable standard formatting preferences
+quote-style = "double"
+indent-style = "space"
+
+[dependency-groups]
+dev = [
+    "bandit>=1.9.4",
+    "httpx>=0.28.1",
+    "pytest>=9.1.1",
+    "pytest-cov>=7.1.0",
+]
+
+[tool.pytest.ini_options]
+# Automatically append coverage parameters whenever "uv run pytest" is executed
+addopts = "--cov=. --cov-report=term-missing --cov-report=html"
+pythonpath = ["."]
+
+[tool.coverage.run]
+# Ignore your testing files and virtual environment folder when calculating coverage
+omit = [
+    "tests/*",
+    ".venv/*",
+    "main.py", # optional: skip main entry point if it's just app initialization
+]
+
+[tool.coverage.report]
+# Fail the test suite if total coverage drops under a specific threshold (e.g., 80%)
+fail_under = 80

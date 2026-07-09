@@ -1,0 +1,31 @@
+.venv/
+env/
+venv/
+ENV/
+*.pyc
+__pycache__/
+
+.env
+.env.*
+!.env.example  # DO NOT ignore the template file so team members know what variables to set
+*.db
+*.sqlite3
+
+.ruff_cache/
+.bandit/
+
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+*.log
+
+.vscode/*
+!.vscode/settings.json  # KEEP settings.json so the team shares the Ruff formatting layout
+!.vscode/extensions.json
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp

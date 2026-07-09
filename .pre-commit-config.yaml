@@ -1,0 +1,23 @@
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.12.8 
+    hooks:
+      - id: ruff
+        args: [ --fix ]
+      - id: ruff-format
+
+  
+  - repo: https://github.com
+    rev: 1.8.2 
+    hooks:
+      - id: bandit
+        args: ["-r", "-lll", "app/"] 
+
+  
+  - repo: local
+    hooks:
+      - id: uv-audit
+        name: uv audit
+        entry: uv audit
+        language: system
+        pass_filenames: false
