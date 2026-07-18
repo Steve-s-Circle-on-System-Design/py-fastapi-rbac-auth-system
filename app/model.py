@@ -1,21 +1,14 @@
-from pydantic import BaseModel, EmailStr, Field
-from datetime import datetime
-from typing import Optional
+from pydantic import BaseModel, ConfigDict, EmailStr
 import uuid
 
-class UserBase(BaseModel):
+class UserCreate(BaseModel):
     email: EmailStr
-    role: str = "user"
+    password: str
+    model_config = ConfigDict(from_attributes=True)
 
+class UserRead(BaseModel):
+    id: uuid.UUID  
+    email: EmailStr
+    role: str
 
-class UserCreate(UserBase):
-    password: str = Field(..., min_length=8)  # Require password on sign-up
-
-class UserRead(UserBase):
-    id: uuid.UUID
-    is_verified: bool
-    created_at: datetime
-    updated_at: Optional[datetime] = None
-
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
