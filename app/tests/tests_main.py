@@ -1,6 +1,6 @@
 from fastapi.testclient import TestClient
 
-from ..main import app
+from app.api import app
 
 # 2. Initialize the TestClient (acts like a mock browser)
 client = TestClient(app)
