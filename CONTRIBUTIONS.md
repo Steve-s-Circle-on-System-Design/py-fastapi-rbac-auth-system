@@ -51,10 +51,10 @@ By participating in this project, you agree to abide by our Code of Conduct. Ple
 
 5. ### Fire Up the Engine Server:
     #### Development watch mode
-    
+    ```bash
+    uv run uvicorn app.main:app --reload
 
     #### Production build compilation
-    
 
 ---
 

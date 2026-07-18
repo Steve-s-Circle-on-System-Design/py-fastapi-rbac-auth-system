@@ -1,57 +1,44 @@
-import uuid
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, status, Depends
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
 
-import model
-from database import engine, Base, AsyncSessionLocal
-from database_model import User, UserRole
-from hash import hash_password
+from fastapi import FastAPI
+from scalar_fastapi import AgentScalarConfig, get_scalar_api_reference
+
+from app.api import router as v1_router
+from app.config import settings
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
     yield
 
-app = FastAPI(lifespan=lifespan)
 
-async def get_db():
-    async with AsyncSessionLocal() as session:
-        try:
-            yield session
-        finally:
-            await session.close()
+app = FastAPI(
+    title=settings.PROJECT_NAME,
+    lifespan=lifespan,
+    docs_url=None,
+    redoc_url=None,
+    openapi_tags=[
+        {
+            "name": "User Creation",
+            "description": "Admin endpoints for creating new user accounts.",
+        },
+    ],
+)
 
-@app.post("/users", response_model=model.UserRead, status_code=status.HTTP_201_CREATED)
-async def create_user(user_in: model.UserCreate, db: AsyncSession = Depends(get_db)):
-    # 1. Check if user exists
-    query = select(User).where(User.email == user_in.email)
-    result = await db.execute(query)
-    if result.scalars().first():
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, 
-            detail="Email already registered"
-        )
-    
-    new_user = User(
-        email=user_in.email,
-        password_hash=hash_password(user_in.password),
-        role=UserRole.USER
+
+@app.get("/docs", include_in_schema=False)
+async def scalar_html():
+    return get_scalar_api_reference(
+        openapi_url=app.openapi_url,
+        title="Python RBAC API Reference",
+        servers=[{"url": "/", "description": "Current server"}],
+        default_open_all_tags=True,
+        expand_all_responses=True,
+        expand_all_model_sections=True,
+        order_schema_properties_by="preserve",
+        telemetry=False,
+        agent=AgentScalarConfig(disabled=True),
     )
-    
-    db.add(new_user)
-    try:
-        await db.commit()
-        await db.refresh(new_user)
-    except Exception:
-        await db.rollback()
-        raise HTTPException(status_code=500, detail="Database error")
-    
-    return new_user
 
 
-
-
-
+app.include_router(v1_router, prefix=settings.API_V1_STR)

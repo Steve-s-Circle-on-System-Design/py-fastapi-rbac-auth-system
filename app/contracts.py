@@ -1,13 +1,16 @@
-from pydantic import BaseModel, ConfigDict, EmailStr
 import uuid
+
+from pydantic import BaseModel, ConfigDict, EmailStr
+
 
 class UserCreate(BaseModel):
     email: EmailStr
     password: str
     model_config = ConfigDict(from_attributes=True)
 
+
 class UserRead(BaseModel):
-    id: uuid.UUID  
+    id: uuid.UUID
     email: EmailStr
     role: str
 
