@@ -52,3 +52,6 @@ async def create_user(user_in: model.UserCreate, db: AsyncSession = Depends(get_
     return new_user
 
 
+
+
+
