@@ -1,10 +1,20 @@
-from fastapi import APIRouter as v1_router, FastAPI
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI
 from scalar_fastapi import AgentScalarConfig, get_scalar_api_reference
 
+from app.api import router as v1_router
 from app.config import settings
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    yield
+
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
+    lifespan=lifespan,
     docs_url=None,
     redoc_url=None,
     openapi_tags=[
