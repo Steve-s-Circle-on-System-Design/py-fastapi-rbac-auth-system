@@ -93,3 +93,8 @@ class EmailLog(Base):
     )
 
     user: Mapped["User"] = relationship(back_populates="email_logs")
+
+
+
+
+    
