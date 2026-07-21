@@ -1,8 +1,8 @@
 import enum
 import uuid
 from datetime import UTC, datetime
-
-from sqlalchemy import JSON, Boolean, DateTime, Enum, ForeignKey, String, text
+#added Integer import
+from sqlalchemy import JSON, Boolean, DateTime, Enum, ForeignKey, String, text, Integer
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -34,12 +34,16 @@ class User(Base):
         Enum(UserRole, native_enum=False), default=UserRole.USER, nullable=False
     )
     is_verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    
+    failed_login_attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
+    lockout_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    #fixed datetime conflict issue
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, server_default=text("TIMEZONE('utc', now())")
+        DateTime(timezone=True), server_default=text("TIMEZONE('utc', now())")
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime,
+        DateTime(timezone=True),
         server_default=text("TIMEZONE('utc', now())"),
         onupdate=lambda: datetime.now(UTC),
     )
