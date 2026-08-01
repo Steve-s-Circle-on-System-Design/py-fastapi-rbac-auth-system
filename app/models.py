@@ -31,6 +31,8 @@ class FileContextEnum(str, enum.Enum):
     uploads = "uploads"
 
 
+import enum
+
 class EmailStatusEnum(str, enum.Enum):
     pending = "pending"
     sent = "sent"
@@ -39,6 +41,21 @@ class EmailStatusEnum(str, enum.Enum):
     bounced = "bounced"
     opened = "opened"
     complaint = "complaint"
+
+    ALLOWED_TRANSITIONS = {
+        "pending": {"sent", "bounced", "failed"},
+        "sent": {"delivered", "bounced", "complaint", "failed"},
+        "delivered": {"opened", "bounced", "complaint"},
+        "opened": {"clicked", "bounced", "complaint"}, 
+        "clicked": {"bounced", "complaint"},
+        "failed": set(),
+        "bounced": set(),   
+        "complaint": set(),  
+    }
+
+    @classmethod
+    def can_transition(cls, current: "EmailStatusEnum", target: "EmailStatusEnum") -> bool:
+        return target in cls.ALLOWED_TRANSITIONS.get(current, set())
 
 
 class RevokeReasonEnum(str, enum.Enum):

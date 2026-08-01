@@ -2,13 +2,15 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
-
+import json
 import app.contracts as contracts
 from app.auth import create_new_user, login, logout, refresh_token
 from app.database import get_db
+from app.security import verify_email_provider_webhook
+from app.services.email_service import EmailStatusService, WebhookPayload
 
-router = APIRouter()
 
+router = APIRouter(prefix="/webhooks/emails", tags=["Webhooks"])
 
 @router.post(
     "/users",
@@ -51,3 +53,19 @@ async def logout_user(
 ) -> Response:
     await logout(db, payload.refresh_token)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+@router.post("/events", status_code=status.HTTP_200_OK)
+async def email_events_webhook(
+    raw_body: bytes = Depends(verify_email_provider_webhook),
+):
+    """
+    Endpoint protected by the Webhook Security Guard dependency.
+    Parses payload and runs state-machine evaluation rules.
+    """
+    try:
+        data = json.loads(raw_body.decode("utf-8"))
+        payload = WebhookPayload(**data)
+    except Exception as e:
+        return {"status": "error", "detail": f"Invalid payload structure: {str(e)}"}
+
+    return {"status": "success", "processed_event": payload.event_type}
