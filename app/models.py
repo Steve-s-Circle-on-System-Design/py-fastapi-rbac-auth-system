@@ -85,8 +85,6 @@ class UserRole(Base):
         DateTime(timezone=True), server_default=text("TIMEZONE('utc', now())")
     )
 
-    __table_args__ = (UniqueConstraint("user_id", "role_id", name="uq_user_role"),)
-
 
 class UserFile(Base):
     __tablename__ = "user_files"
