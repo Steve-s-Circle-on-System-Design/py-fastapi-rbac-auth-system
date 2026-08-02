@@ -11,6 +11,7 @@ dependencies = [
     "fastapi[standard]>=0.139.0",
     "psycopg2>=2.9.12",
     "psycopg[binary]>=3.3.4",
+    "pyjwt>=2.13.0",
     "python-dotenv>=1.2.2",
     "ruff>=0.15.20",
     "scalar-fastapi>=1.8.2",
