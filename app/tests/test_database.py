@@ -1,11 +1,17 @@
 import pytest
 from sqlalchemy import text
-from app.database import get_db
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
+
+from app.database import engine, get_db
+
+
+def test_engine_is_async():
+    assert isinstance(engine, AsyncEngine)
+
 
 @pytest.mark.asyncio
-async def test_database_connection():
-    async for db in get_db():  
+async def test_get_db_yields_session():
+    async for db in get_db():
+        assert isinstance(db, AsyncSession)
         result = await db.execute(text("SELECT 1"))
-        scalar = result.scalar()
-        assert scalar == 1
-        break   
+        assert result.scalar() == 1

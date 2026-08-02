@@ -1,6 +1,7 @@
 import enum
 import uuid
 from datetime import UTC, datetime
+from typing import ClassVar
 
 from sqlalchemy import (
     Boolean,
@@ -21,17 +22,17 @@ from app.database import Base
 # --- ENUMS ---
 
 
-class VerificationTokenType(str, enum.Enum):
+class VerificationTokenType(enum.StrEnum):
     email_verification = "email_verification"
     password_reset = "password_reset"
 
 
-class FileContextEnum(str, enum.Enum):
+class FileContextEnum(enum.StrEnum):
     profile_picture = "profile_picture"
     uploads = "uploads"
 
 
-class EmailStatusEnum(str, enum.Enum):
+class EmailStatusEnum(enum.StrEnum):
     pending = "pending"
     sent = "sent"
     delivered = "delivered"
@@ -41,7 +42,7 @@ class EmailStatusEnum(str, enum.Enum):
     complaint = "complaint"
 
 
-class RevokeReasonEnum(str, enum.Enum):
+class RevokeReasonEnum(enum.StrEnum):
     logout = "logout"
     logout_all = "logout_all"
     password_change = "password_change"
@@ -83,8 +84,6 @@ class UserRole(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=text("TIMEZONE('utc', now())")
     )
-
-    __table_args__ = (UniqueConstraint("user_id", "role_id", name="uq_user_role"),)
 
 
 class UserFile(Base):
@@ -159,9 +158,7 @@ class User(Base):
     email: Mapped[str] = mapped_column(
         String(255), unique=True, index=True, nullable=False
     )
-    password_hash: Mapped[str | None] = mapped_column(
-        String(255), nullable=True
-    ) 
+    password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
     last_login: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
@@ -346,7 +343,7 @@ class RefreshToken(Base):
 class EmailLog(Base):
     __tablename__ = "email_logs"
 
-    TRANSITION_RULES: dict[EmailStatusEnum, set[EmailStatusEnum]] = {
+    TRANSITION_RULES: ClassVar[dict[EmailStatusEnum, set[EmailStatusEnum]]] = {
         EmailStatusEnum.pending: {EmailStatusEnum.sent, EmailStatusEnum.failed},
         EmailStatusEnum.sent: {
             EmailStatusEnum.delivered,
@@ -394,9 +391,10 @@ class EmailLog(Base):
         allowed_next_states = self.TRANSITION_RULES.get(self.status, set())
 
         if new_status not in allowed_next_states:
+            allowed = [s.value for s in allowed_next_states]
             raise ValueError(
-                f"Invalid status transition from '{self.status.value}' to '{new_status.value}'. "
-                f"Allowed transitions are: {[s.value for s in allowed_next_states]}"
+                f"Invalid status transition from '{self.status.value}' "
+                f"to '{new_status.value}'. Allowed transitions are: {allowed}"
             )
 
         self.status = new_status

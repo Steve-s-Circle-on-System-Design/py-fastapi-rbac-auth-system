@@ -31,7 +31,7 @@ def _hash_refresh_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
-def create_access_token(user_id: uuid.UUID) -> str:
+def _create_access_token(user_id: uuid.UUID) -> str:
     now = datetime.now(UTC)
     if settings.JWT_ALGORITHM != "HS256":
         raise RuntimeError("Only HS256 access tokens are supported")
