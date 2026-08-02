@@ -1,11 +1,10 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import app.contracts as contracts
-# Import your new authentication function here
-from app.auth import create_new_user, authenticate_user
+from app.auth import create_new_user, login, logout, refresh_token
 from app.database import get_db
 
 router = APIRouter()
@@ -23,16 +22,32 @@ async def create_user(
     return await create_new_user(db, user)
 
 
-# --- New Login Endpoint ---
-@router.post(
-    "/login",
-    status_code=status.HTTP_200_OK,
-    tags=["Authentication"],
-)
-async def login(
-    credentials: contracts.UserLogin, db: Annotated[AsyncSession, Depends(get_db)]
+@router.post("/auth/login", response_model=contracts.TokenPair, tags=["Authentication"])
+async def login_user(
+    credentials: contracts.LoginRequest,
+    request: Request,
+    db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    user = await authenticate_user(db, credentials.email, credentials.password)
-    
-    #success message
-    return {"message": "Login successful", "email": user.email}
+    return await login(db, credentials, request)
+
+
+@router.post(
+    "/auth/refresh", response_model=contracts.TokenPair, tags=["Authentication"]
+)
+async def refresh_user_token(
+    payload: contracts.RefreshTokenRequest,
+    request: Request,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    return await refresh_token(db, payload.refresh_token, request)
+
+
+@router.post(
+    "/auth/logout", status_code=status.HTTP_204_NO_CONTENT, tags=["Authentication"]
+)
+async def logout_user(
+    payload: contracts.RefreshTokenRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> Response:
+    await logout(db, payload.refresh_token)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
