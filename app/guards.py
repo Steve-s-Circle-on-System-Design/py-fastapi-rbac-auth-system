@@ -19,6 +19,8 @@ authenticated user passes) — it never fails open on *authentication*,
 only on the role check.
 """
 
+from typing import Annotated
+
 from fastapi import Depends, HTTPException, Request, status
 
 from app.roles import get_required_roles
@@ -31,7 +33,7 @@ class RolesGuard:
     async def __call__(
         self,
         request: Request,
-        current_user: CurrentUser = Depends(get_current_user),
+        current_user: Annotated[CurrentUser, Depends(get_current_user)],
     ) -> CurrentUser:
         route = request.scope.get("route")
         endpoint = getattr(route, "endpoint", None)
