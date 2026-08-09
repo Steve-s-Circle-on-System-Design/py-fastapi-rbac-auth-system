@@ -1,14 +1,18 @@
+import uuid
+from datetime import UTC, datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import app.contracts as contracts
 from app.auth import create_new_user, login, logout, refresh_token
 from app.database import get_db
 from app.guards import RolesGuard
+from app.models import User
 from app.roles import Role, Roles
 from app.security import CurrentUser
+from app.tokens import validate_token
 
 router = APIRouter()
 
@@ -24,11 +28,12 @@ async def create_user(
 ):
     return await create_new_user(db, user)
 
+
 @router.get("/admin/dashboard", tags=["Admin"])
 @Roles(Role.ADMIN)
-async def admin_dashboard(user: CurrentUser = Depends(RolesGuard())):
+async def admin_dashboard(user: Annotated[CurrentUser, Depends(RolesGuard())]):
     """Example endpoint demonstrating the @Roles + RolesGuard pattern.
- 
+
     Any endpoint can be locked the same way:
         @router.get("/some/path")
         @Roles(Role.ADMIN)  # or @Roles(Role.ADMIN, Role.USER) for multiple tiers
@@ -36,6 +41,7 @@ async def admin_dashboard(user: CurrentUser = Depends(RolesGuard())):
             ...
     """
     return {"message": "Welcome to the admin dashboard", "user_id": str(user.id)}
+
 
 @router.post("/auth/login", response_model=contracts.TokenPair, tags=["Authentication"])
 async def login_user(
@@ -66,3 +72,19 @@ async def logout_user(
 ) -> Response:
     await logout(db, payload.refresh_token)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get("/auth/verify", tags=["Authentication"])
+@router.post("/auth/verify", tags=["Authentication"])
+async def verify_email(token: str, db: Annotated[AsyncSession, Depends(get_db)]):
+    payload = validate_token(token, expected_type="email_verification")
+    user_id = uuid.UUID(payload["sub"])
+
+    user = await db.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    user.is_verified = True
+    user.email_verified_at = datetime.now(UTC)
+    await db.commit()
+    return {"message": "Email verified successfully"}

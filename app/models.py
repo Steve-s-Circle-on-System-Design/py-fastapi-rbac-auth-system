@@ -167,13 +167,24 @@ class User(Base):
         DateTime(timezone=True), nullable=True
     )
     is_verified: Mapped[bool] = mapped_column(Boolean, default=False)
-    
+
     provider_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     provider: Mapped[str | None] = mapped_column(String(50), nullable=True)
     login_attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
-    lockout_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    #fixed datetime conflict issue
+    lockout_until: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    @property
+    def failed_login_attempts(self) -> int:
+        return self.login_attempts
+
+    @failed_login_attempts.setter
+    def failed_login_attempts(self, value: int) -> None:
+        self.login_attempts = value
+
+    # fixed datetime conflict issue
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=text("TIMEZONE('utc', now())")
     )
@@ -213,7 +224,7 @@ class VerificationToken(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
-    token: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    token: Mapped[str] = mapped_column(Text, nullable=False, index=True)
     type: Mapped[VerificationTokenType] = mapped_column(
         Enum(VerificationTokenType, native_enum=False), nullable=False
     )

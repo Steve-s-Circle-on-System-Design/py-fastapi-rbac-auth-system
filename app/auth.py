@@ -1,20 +1,23 @@
 import base64
 import hashlib
-import hmac
-import json
 import secrets
 import uuid
 from datetime import UTC, datetime, timedelta
 
+import jwt
 from fastapi import HTTPException, Request, status
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
-from datetime import datetime, timedelta, UTC
 
 from app.config import settings
 from app.contracts import LoginRequest, TokenPair, UserCreate
 from app.hash import hash_password, verify_password
 from app.models import RefreshToken, RevokeReasonEnum, User
+from app.tokens import (
+    generate_token,
+    get_last_verification_token,
+    send_email_verification,
+)
 
 ACCESS_TOKEN_LIFETIME = timedelta(minutes=15)
 REFRESH_TOKEN_LIFETIME = timedelta(days=7)
@@ -34,25 +37,16 @@ def _hash_refresh_token(token: str) -> str:
 
 def _create_access_token(user_id: uuid.UUID) -> str:
     now = datetime.now(UTC)
-    if settings.JWT_ALGORITHM != "HS256":
-        raise RuntimeError("Only HS256 access tokens are supported")
-    header = _base64url_encode(b'{"alg":"HS256","typ":"JWT"}')
-    payload = _base64url_encode(
-        json.dumps(
-            {
-                "sub": str(user_id),
-                "type": "access",
-                "iat": int(now.timestamp()),
-                "exp": int((now + ACCESS_TOKEN_LIFETIME).timestamp()),
-            },
-            separators=(",", ":"),
-        ).encode("utf-8")
+    payload = {
+        "sub": str(user_id),
+        "type": "access",
+        "jti": str(uuid.uuid4()),
+        "iat": int(now.timestamp()),
+        "exp": int((now + ACCESS_TOKEN_LIFETIME).timestamp()),
+    }
+    return jwt.encode(
+        payload, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM
     )
-    signing_input = f"{header}.{payload}".encode("ascii")
-    signature = hmac.new(
-        settings.JWT_SECRET_KEY.encode("utf-8"), signing_input, hashlib.sha256
-    ).digest()
-    return f"{header}.{payload}.{_base64url_encode(signature)}"
 
 
 def _base64url_encode(value: bytes) -> str:
@@ -90,7 +84,7 @@ async def _issue_token_pair(
     )
 
 
-async def create_new_user(db: AsyncSession, user: UserCreate):
+async def create_new_user(db: AsyncSession, user: UserCreate) -> User:
     # 1. Check if user exists
     query = select(User).where(User.email == user.email)
     result = await db.execute(query)
@@ -102,6 +96,7 @@ async def create_new_user(db: AsyncSession, user: UserCreate):
     new_user = User(
         email=user.email,
         password_hash=hash_password(user.password),
+        is_verified=False,
     )
 
     db.add(new_user)
@@ -112,10 +107,14 @@ async def create_new_user(db: AsyncSession, user: UserCreate):
         await db.rollback()
         raise HTTPException(status_code=500, detail="Database error") from e
 
+    # Generate token and trigger verification email automatically
+    verification_token = generate_token(new_user.id)
+    await send_email_verification(new_user.email, verification_token, new_user.id, db)
+    await db.commit()
+
     return new_user
 
 
-#user authentication function with lockout mechanism
 async def authenticate_user(db: AsyncSession, credentials: LoginRequest) -> User:
     # 1. Check if user exists
     query = select(User).where(User.email == credentials.email)
@@ -124,33 +123,37 @@ async def authenticate_user(db: AsyncSession, credentials: LoginRequest) -> User
 
     if not user:
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, 
-            detail="Invalid credentials"
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid credentials",
         )
 
-    #ACCEPTANCE CRITERIA: Reject instantly if lockout is active
+    # Reject instantly if lockout is active
     now = datetime.now(UTC)
     if user.lockout_until and user.lockout_until > now:
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, 
-            detail="Account locked due to multiple failed attempts. Try again later."
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Account locked due to multiple failed attempts. Try again later.",
         )
 
-    #Verify Password
-    is_password_correct = verify_password(credentials.password, user.password_hash)
+    # Verify Password
+    is_password_correct = (
+        verify_password(credentials.password, user.password_hash)
+        if user.password_hash
+        else False
+    )
 
     if not is_password_correct:
-        #Increment attempt counter on failure
+        # Increment attempt counter on failure
         user.login_attempts += 1
-        
+
         # 5th failure = 15-minute lockout
         if user.login_attempts >= 5:
-            user.lockout_until = now + timedelta(minutes=5)
-        
+            user.lockout_until = now + timedelta(minutes=15)
+
         await db.commit()
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, 
-            detail="Invalid credentials"
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid credentials",
         )
 
     # Reset counters
@@ -159,25 +162,70 @@ async def authenticate_user(db: AsyncSession, credentials: LoginRequest) -> User
     await db.commit()
 
     return user
-  
+
+
 async def login(
     db: AsyncSession, credentials: LoginRequest, request: Request
 ) -> TokenPair:
+    now = datetime.now(UTC)
     result = await db.execute(select(User).where(User.email == credentials.email))
     user = result.scalars().first()
-    if (
-        not user
-        or not user.password_hash
-        or not verify_password(credentials.password, user.password_hash)
-    ):
+
+    if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    user.last_login = datetime.now(UTC)
+    # 1. Reject instantly if lockout duration is active
+    if user.lockout_until and user.lockout_until > now:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Account locked due to multiple failed attempts. Try again later.",
+        )
+
+    # 2. Verify password
+    if not user.password_hash or not verify_password(
+        credentials.password, user.password_hash
+    ):
+        user.login_attempts += 1
+        if user.login_attempts >= 5:
+            user.lockout_until = now + timedelta(minutes=15)
+        await db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid email or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # 3. Check verification status
+    if not user.is_verified:
+        # Check 5-minute resend constraint
+        last_token = await get_last_verification_token(db, user.id)
+        if last_token and (now - last_token.created_at) < timedelta(minutes=5):
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=(
+                    "Email verification required. "
+                    "Please wait 5 minutes before requesting another email."
+                ),
+            )
+        # Resend email if >= 5 minutes (or first unverified attempt after registration)
+        new_token = generate_token(user.id)
+        await send_email_verification(user.email, new_token, user.id, db)
+        await db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Email not verified. A new verification email has been sent.",
+        )
+
+    # 4. Reset lockout counters & update login metadata
+    user.login_attempts = 0
+    user.lockout_until = None
+    user.last_login = now
     user.last_login_ip = _request_metadata(request)[0]
+
     tokens = await _issue_token_pair(db, user, request)
     await db.commit()
     return tokens
@@ -200,7 +248,7 @@ async def refresh_token(
     now = datetime.now(UTC)
     if token.is_revoked or token.revoked_at is not None:
         # A previously rotated, logged-out, or otherwise revoked token is a
-        # reuse signal.  Terminate every still-active refresh session for this user.
+        # reuse signal. Terminate every still-active refresh session for this user.
         await db.execute(
             update(RefreshToken)
             .where(
