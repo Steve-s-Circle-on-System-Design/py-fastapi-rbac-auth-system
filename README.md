@@ -80,15 +80,19 @@ templates/rbac-auth/
 ├── app/
 │   ├── __init__.py
 │   ├── main.py             # FastAPI app instance, lifespan, Scalar docs route, router mounting
-│   ├── api.py               # Route definitions (currently: POST /users)
+│   ├── api.py               # Route definitions (POST /users, GET /admin/dashboard example)
 │   ├── auth.py               # Business logic for auth flows (currently: create_new_user)
 │   ├── config.py             # Pydantic Settings — loads .env into a typed Settings object
 │   ├── contracts.py           # Pydantic request/response schemas (API boundary types)
 │   ├── database.py            # Async engine, session factory, declarative Base, get_db dependency
+│   ├── guards.py               # RolesGuard — reads @Roles metadata, enforces it against the current user
 │   ├── hash.py                # Password hashing/verification (bcrypt)
 │   ├── models.py              # SQLAlchemy ORM models (User, RefreshToken, EmailLog)
+│   ├── roles.py                # Role re-export + the @Roles(...) decorator
+│   ├── security.py             # JWT create/decode, get_current_user ("passport" payload)
 │   └── tests/
-│       └── tests_main.py      # API tests
+│       ├── tests_main.py      # API tests
+│       └── test_roles_guard.py # Verifies admin=200, user=403, no-token=401 on a guarded route
 ├── migrations/
 │   ├── versions/
 │   │   └── cfa269117122_initial_migration.py
@@ -110,15 +114,18 @@ templates/rbac-auth/
 | File | Responsibility | Depends on |
 |---|---|---|
 | `main.py` | Creates the `FastAPI` instance, wires up lifespan, disables default docs, exposes Scalar docs at `/docs`, mounts `api.router` under `settings.API_V1_STR` | `api.py`, `config.py` |
-| `api.py` | Declares HTTP routes and their request/response models; delegates all logic to `auth.py` | `contracts.py`, `auth.py`, `database.py` |
+| `api.py` | Declares HTTP routes and their request/response models; delegates all logic to `auth.py`; guarded routes use `@Roles(...)` + `Depends(RolesGuard())` | `contracts.py`, `auth.py`, `database.py`, `guards.py`, `roles.py` |
 | `auth.py` | Business/domain logic — DB reads/writes, uniqueness checks, error handling | `models.py`, `hash.py`, `contracts.py` |
 | `contracts.py` | Pydantic schemas — the **only** shapes that should cross the API boundary | — |
 | `models.py` | SQLAlchemy ORM table definitions and enums — the schema source of truth for Alembic autogenerate | `database.py` |
 | `database.py` | Async engine + session factory + `Base` + `get_db()` FastAPI dependency | `config.py` |
 | `config.py` | Typed settings loaded from `.env` via `pydantic-settings` | `.env` |
 | `hash.py` | Password hashing/verification helpers, isolated so the hashing algorithm can change in one place | `bcrypt` |
+| `roles.py` | `@Roles(*roles)` decorator — attaches required-role metadata onto a route handler function | `models.py` (re-exports `UserRole` as `Role`) |
+| `security.py` | `create_access_token` / `get_current_user` — JWT issuing and decoding; the "passport payload" source | `config.py`, `roles.py` |
+| `guards.py` | `RolesGuard` — reads `@Roles(...)` metadata off the matched route and enforces it against `get_current_user()` | `roles.py`, `security.py` |
 
-**Rule of thumb for contributors:** a new feature almost always touches these files in this order: `models.py` → `contracts.py` → `auth.py` → `api.py`. See [§10](#10-onboarding-where-do-i-add-things).
+**Rule of thumb for contributors:** a new feature almost always touches these files in this order: `models.py` → `contracts.py` → `auth.py` → `api.py`. To lock a new endpoint behind a role, add `@Roles(Role.X)` above the route decorator and `Depends(RolesGuard())` as a parameter — no changes needed to `guards.py`/`roles.py` themselves. See [§10](#10-onboarding-where-do-i-add-things).
 
 ---
 
@@ -208,13 +215,30 @@ This is the design the RBAC middleware (§11 roadmap) should be built against �
 
 ## 4. Security & RBAC
 
-### Current state
+### Current state (implemented)
 
-Authorization today is a single enum comparison: `User.role == UserRole.ADMIN` (or `USER`). There is no dependency/middleware in the codebase yet that enforces this on any route — the only route (`POST /users`) is unauthenticated.
+Route-level authorization is now a **declarative metadata guard**, not inline `if` checks in controllers:
 
-### Target design
+- **`app/roles.py`** — the `@Roles(*roles: Role)` decorator. It attaches the required roles directly onto the route handler function as an attribute (`__required_roles__`). FastAPI has no built-in metadata/reflection layer (unlike Nest's `Reflector`), so this attribute-on-the-function is the mechanism that stands in for it.
+- **`app/security.py`** — `get_current_user`, a dependency that decodes a JWT bearer token and returns a `CurrentUser` (`id`, `role`) built directly from the token claims. This is the "passport user payload" — the guard trusts the token's claims rather than re-querying the database per request. `create_access_token` exists for issuing tokens; wiring this into a real `/login` endpoint is still open (see [§11](#11-roadmap)).
+- **`app/guards.py`** — `RolesGuard`, a callable FastAPI dependency. It reads the matched route's endpoint off `Request.scope["route"].endpoint` (FastAPI's closest equivalent to Nest's `ExecutionContext`), pulls whatever roles `@Roles(...)` attached to it, and compares them against `current_user.role`. No roles attached → guard is a no-op (any authenticated caller passes). Roles attached but not matched → `403 Forbidden`. No valid token at all → `401 Unauthorized` (handled by `get_current_user`, not the guard itself).
 
-The planned permission-check flow (per sprint outline: "Middleware for permission authentication"):
+Example usage, from `api.py`:
+
+```python
+@router.get("/admin/dashboard", tags=["Admin"])
+@Roles(Role.ADMIN)
+async def admin_dashboard(user: CurrentUser = Depends(RolesGuard())):
+    return {"message": "Welcome to the admin dashboard", "user_id": str(user.id)}
+```
+
+This is verified behavior (see `app/tests/test_roles_guard.py`): an `ADMIN`-issued token gets `200`, a `USER`-issued token gets `403`, and a missing/invalid token gets `401`.
+
+**Scope note:** this enforces the *current* single-enum `User.role` column (`USER`/`ADMIN`). It does **not** yet implement the many-to-many `Role`/`Permission`/`RolePermission` schema described below — `RolesGuard`'s comparison (`current_user.role not in required_roles`) will need to change to a permission-set membership check once that schema lands, rather than a direct enum comparison. That migration is tracked in [§11](#11-roadmap).
+
+### Target design — full permission model
+
+The planned permission-check flow once `Role`/`Permission` tables exist (per sprint outline: "Middleware for permission authentication"):
 
 ```mermaid
 flowchart TD
@@ -225,7 +249,7 @@ flowchart TD
     Check -- no --> Deny[403 Forbidden]
 ```
 
-This should be implemented as a reusable FastAPI dependency (e.g. `require_permission("users:write")`) rather than per-route conditional checks, so permission requirements stay declarative in `api.py`.
+`RolesGuard` above is the enforcement mechanism this flow will run through — only the "Lookup" step changes (from a single enum field to a joined permission set), not the guard/decorator pattern itself.
 
 ### Multitenancy note
 
@@ -387,9 +411,9 @@ Tracking the sprint outline against current implementation. As of this update, t
 | User account creation endpoint | — | ✅ Implemented (`POST /users`) |
 | API endpoint schema docs (Scalar) | — | ✅ Implemented |
 | Role, Permission models + role-permission join table | Wk 1, Day 1 (2nd half) | 🔲 Not started — target schema in [§3](#3-data-model) |
-| Permission-checking middleware/guard on routes | Wk 1, Day 2 (1st half) | 🔲 Not started — target flow in [§4](#4-security--rbac) |
-| Seed default roles (Admin, Manager, User); wire guards into existing routes | Wk 1, Day 2 (2nd half) | 🔲 Not started |
-| Extract permission-check logic into reusable decorator/middleware factory | Wk 1, Day 3 (refactor) | 🔲 Not started — depends on the guard above landing first |
+| Permission-checking middleware/guard on routes | Wk 1, Day 2 (1st half) | ✅ Implemented — `@Roles(...)` decorator + `RolesGuard` dependency (see [§4](#4-security--rbac)); enforces the current single-enum `role` field, not yet the full permission-set model |
+| Seed default roles (Admin, Manager, User); wire guards into existing routes | Wk 1, Day 2 (2nd half) | 🟡 Partial — `@Roles(Role.ADMIN)` wired on the example `/admin/dashboard` route; not yet applied across all real endpoints, and no seed/migration for a "Manager" tier (current `UserRole` enum is only `USER`/`ADMIN`) |
+| Extract permission-check logic into reusable decorator/middleware factory | Wk 1, Day 3 (refactor) | ✅ Implemented — `@Roles(...)` + `RolesGuard()` is already the reusable form; no route-specific duplication needed |
 | `organization_id`/`tenant_id` column across relevant tables + `Organization` model | Wk 2, Day 1 | 🔲 Not started |
 | Tenant-scoping middleware (auto-filter every query by requester's org) | Wk 2, Day 2 | 🔲 Not started |
 | Tests proving Org A can never read Org B's data, even with a forged ID | Wk 2, Day 2 | 🔲 Not started |
@@ -413,3 +437,4 @@ Append-only. One line per meaningful change — date, what changed, who. Don't e
 
 - **2026-07-21** — Initial architecture documentation written: current-state vs. target-design split established for RBAC, email log state machine, and refresh token lifecycle. *(@you)*
 - **2026-07-21** — Roadmap re-mapped against the 90-Day curriculum, Weeks 1–3 (RBAC Core, Multi-Tenancy, SaaS Backend integration); each item now traces to a specific curriculum day. Weeks 4–12 tracked separately at the repo level. *(@you)*
+- **2026-07-28** — Implemented the declarative `@Roles(...)` decorator + `RolesGuard` FastAPI dependency (`app/roles.py`, `app/guards.py`), backed by a minimal JWT `get_current_user` (`app/security.py`). Wired onto an example `/admin/dashboard` route in `api.py`. Verified via `app/tests/test_roles_guard.py`: admin → 200, standard user → 403, no token → 401. Enforces the current single-enum `role` field only — will need to change to a permission-set check once the `Role`/`Permission` tables land. *(@you)*
