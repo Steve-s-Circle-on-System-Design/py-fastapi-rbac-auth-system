@@ -21,10 +21,18 @@ Order matters: `@Roles(...)` must sit *above* the route decorator
 matching how you're already used to stacking decorators in Nest.
 """
 
+import enum
 from collections.abc import Callable
 from typing import TypeVar
 
-from app.models import UserRole as Role  # noqa: F401  (re-exported for `from app.roles import Role`)
+
+class Role(str, enum.Enum):
+    ADMIN = "ADMIN"
+    USER = "USER"
+
+
+# Alias for compatibility with tests expecting UserRole enum
+UserRole = Role
 
 ROLES_METADATA_KEY = "__required_roles__"
 
@@ -43,4 +51,4 @@ def Roles(*roles: Role) -> Callable[[F], F]:
 
 def get_required_roles(endpoint: Callable) -> tuple[Role, ...]:
     """Read back the roles attached by `@Roles(...)`. Empty tuple = no restriction."""
-    return getattr(endpoint, ROLES_METADATA_KEY, ())
+    return getattr(endpoint, ROLES_METADATA_KEY, ())

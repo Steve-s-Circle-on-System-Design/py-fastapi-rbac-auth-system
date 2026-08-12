@@ -164,21 +164,17 @@ async def test_refresh_token_reuse_is_detected(db_session):
 
 
 @pytest.mark.asyncio
-async def test_refresh_expired_token_rejected(db_session):
+async def test_refresh_expired_token_rejected(db_session, redis_client):
     await _make_user(db_session)
     tokens = await login(
         db_session,
         LoginRequest(email="user@example.com", password="s3cret!"),
         make_request(),
     )
-    result = await db_session.execute(
-        select(RefreshToken).where(
-            RefreshToken.token_hash == _hash_refresh_token(tokens.refresh_token)
-        )
-    )
-    row = result.scalars().one()
-    row.expires_at = datetime.now(UTC) - timedelta(seconds=1)
-    await db_session.commit()
+    token_hash = _hash_refresh_token(tokens.refresh_token)
+
+    # Evict token from Redis as if TTL expired
+    await redis_client.delete(f"refresh_token:{token_hash}")
 
     with pytest.raises(HTTPException) as exc:
         await refresh_token(db_session, tokens.refresh_token, make_request())
@@ -186,20 +182,56 @@ async def test_refresh_expired_token_rejected(db_session):
 
 
 @pytest.mark.asyncio
-async def test_logout_revokes_token(db_session):
+async def test_logout_revokes_token(db_session, redis_client):
     await _make_user(db_session)
     tokens = await login(
         db_session,
         LoginRequest(email="user@example.com", password="s3cret!"),
         make_request(),
     )
+    token_hash = _hash_refresh_token(tokens.refresh_token)
+
+    # Verify session is stored in Redis before logout
+    raw_redis_session = await redis_client.get(f"refresh_token:{token_hash}")
+    assert raw_redis_session is not None
+
     await logout(db_session, tokens.refresh_token)
+
+    # Verify session is deleted from Redis after logout
+    raw_redis_session_after = await redis_client.get(f"refresh_token:{token_hash}")
+    assert raw_redis_session_after is None
 
     result = await db_session.execute(
         select(RefreshToken).where(
-            RefreshToken.token_hash == _hash_refresh_token(tokens.refresh_token)
+            RefreshToken.token_hash == token_hash
         )
     )
     row = result.scalars().one()
     assert row.is_revoked is True
     assert row.revoke_reason == RevokeReasonEnum.logout
+
+
+@pytest.mark.asyncio
+async def test_redis_user_session_revocation_on_token_reuse(db_session, redis_client):
+    user = await _make_user(db_session)
+    tokens = await login(
+        db_session,
+        LoginRequest(email="user@example.com", password="s3cret!"),
+        make_request(),
+    )
+    # First rotation succeeds
+    rotated = await refresh_token(db_session, tokens.refresh_token, make_request())
+
+    # Replaying old token triggers token reuse protection via Redis
+    with pytest.raises(HTTPException) as exc:
+        await refresh_token(db_session, tokens.refresh_token, make_request())
+    assert exc.value.status_code == 401
+
+    # User active sessions in Redis should be completely cleared
+    active_sessions = await redis_client.smembers(f"user_sessions:{user.id}")
+    assert len(active_sessions) == 0
+
+    # User revocation timestamp should be recorded in Redis
+    revoked_at = await redis_client.get(f"user_revoked_at:{user.id}")
+    assert revoked_at is not None
+
