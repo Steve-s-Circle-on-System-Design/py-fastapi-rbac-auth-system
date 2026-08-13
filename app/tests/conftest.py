@@ -8,8 +8,12 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 import app.models  # noqa: F401  (registers all tables on Base.metadata)
+from app.auth import ensure_role
 from app.config import settings
 from app.database import Base
+from app.hash import hash_password
+from app.models import User, UserRole
+from app.roles import Role
 
 # Tests run against a dedicated database, never the dev database the app
 # points at. conftest swaps the database name in DATABASE_URL and creates the
@@ -89,3 +93,29 @@ def client(prepared_database):
     app.dependency_overrides[get_db] = _override_get_db
     yield TestClient(app)
     app.dependency_overrides.pop(get_db, None)
+
+
+ADMIN_EMAIL = "admin@example.com"
+ADMIN_PASSWORD = "admin-pass!"
+
+
+@pytest.fixture
+def admin_headers(client):
+    """Bearer header for an admin created directly in the test database."""
+
+    async def _seed_admin() -> None:
+        async with TestSessionLocal() as db:
+            admin = User(email=ADMIN_EMAIL, password_hash=hash_password(ADMIN_PASSWORD))
+            db.add(admin)
+            await db.flush()
+            admin_role = await ensure_role(db, Role.ADMIN.value, "Administrator")
+            db.add(UserRole(user_id=admin.id, role_id=admin_role.id))
+            await db.commit()
+
+    asyncio.run(_seed_admin())
+    response = client.post(
+        f"{settings.API_V1_STR}/auth/login",
+        json={"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD},
+    )
+    assert response.status_code == 200
+    return {"Authorization": f"Bearer {response.json()['accessToken']}"}

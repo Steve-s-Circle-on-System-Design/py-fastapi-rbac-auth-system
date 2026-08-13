@@ -68,6 +68,7 @@ class RevokeReasonEnum(enum.StrEnum):
     session_hijack_suspected = "session_hijack_suspected"
     rotated = "rotated"
     expired = "expired"
+    inactivity = "inactivity"
 
 
 # --- ASSOCIATION TABLES / JOIN TABLES ---
@@ -184,13 +185,15 @@ class User(Base):
         DateTime(timezone=True), nullable=True
     )
     is_verified: Mapped[bool] = mapped_column(Boolean, default=False)
-    
+
     provider_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     provider: Mapped[str | None] = mapped_column(String(50), nullable=True)
     login_attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
-    lockout_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    #fixed datetime conflict issue
+    lockout_until: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # fixed datetime conflict issue
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=text("TIMEZONE('utc', now())")
     )

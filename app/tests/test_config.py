@@ -16,6 +16,20 @@ def test_required_settings_present():
     assert settings.JWT_SECRET_KEY
     assert settings.JWT_ALGORITHM
 
+    # Token lifetimes must be positive so TTLs are always meaningful.
+    assert settings.ACCESS_TOKEN_EXPIRE_MINUTES > 0
+    assert settings.REFRESH_TOKEN_EXPIRE_DAYS > 0
+    assert settings.REFRESH_TOKEN_INACTIVITY_DAYS > 0
+    assert settings.ACCOUNT_LOCKOUT_MINUTES > 0
+
+
+def test_access_token_ttl_is_15_minutes():
+    assert settings.ACCESS_TOKEN_EXPIRE_MINUTES == 15
+
+
+def test_account_lockout_is_15_minutes():
+    assert settings.ACCOUNT_LOCKOUT_MINUTES == 15
+
 
 def test_database_url_uses_asyncpg_driver():
     assert settings.DATABASE_URL.startswith("postgresql+asyncpg://")
