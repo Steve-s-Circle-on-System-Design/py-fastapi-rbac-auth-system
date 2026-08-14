@@ -41,6 +41,23 @@ class EmailStatusEnum(enum.StrEnum):
     opened = "opened"
     complaint = "complaint"
 
+    ALLOWED_TRANSITIONS = {
+        "pending": {"sent", "bounced", "failed"},
+        "sent": {"delivered", "bounced", "complaint", "failed"},
+        "delivered": {"opened", "bounced", "complaint"},
+        "opened": {"clicked", "bounced", "complaint"},
+        "clicked": {"bounced", "complaint"},
+        "failed": set(),
+        "bounced": set(),
+        "complaint": set(),
+    }
+
+    @classmethod
+    def can_transition(cls, current: "EmailStatusEnum", target: "EmailStatusEnum") -> bool:
+        return target in cls.ALLOWED_TRANSITIONS.get(current, set())
+
+
+
 
 class RevokeReasonEnum(enum.StrEnum):
     logout = "logout"
