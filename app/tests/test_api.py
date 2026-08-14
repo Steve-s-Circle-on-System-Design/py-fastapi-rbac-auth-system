@@ -39,16 +39,16 @@ def test_create_user_endpoint(client, admin_headers):
 
 def test_create_user_duplicate_email_returns_400(client, admin_headers):
     payload = {"email": "dup@example.com", "password": "s3cret!"}
-    assert (
-        client.post(
-            f"{settings.API_V1_STR}/users", json=payload, headers=admin_headers
-        ).status_code
-        == 201
-    )
-    response = client.post(
+    first_response = client.post(
         f"{settings.API_V1_STR}/users", json=payload, headers=admin_headers
     )
-    assert response.status_code == 400
+    assert first_response.status_code == 201
+
+    duplicate_response = client.post(
+        f"{settings.API_V1_STR}/users", json=payload, headers=admin_headers
+    )
+    assert duplicate_response.status_code == 400
+    assert "already exists" in duplicate_response.json()["detail"]
 
 
 def test_login_endpoint_returns_token_pair(client, admin_headers):

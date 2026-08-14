@@ -136,6 +136,7 @@ async def test_create_new_user_rejects_duplicate_email(db_session):
     with pytest.raises(HTTPException) as exc:
         await _make_user(db_session, email="dup@example.com")
     assert exc.value.status_code == 400
+    assert "already exists" in exc.value.detail
 
 
 @pytest.mark.asyncio
