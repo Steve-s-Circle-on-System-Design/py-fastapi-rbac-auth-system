@@ -15,10 +15,12 @@ class Settings(BaseSettings):
     PROJECT_NAME: str = "Python RBAC API"
     API_V1_STR: str = "/api/v1"
     DATABASE_URL: str
-    # --- Added for RolesGuard / JWT decoding ---
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     JWT_SECRET_KEY: str = "secret-key-for-jwt-signing"
     JWT_ALGORITHM: str = "HS256"
+
+    # Base URL for verification links
+    BASE_URL: str = "http://localhost:8000"
 
     @property
     def SECRET_KEY(self) -> str:
@@ -28,12 +30,13 @@ class Settings(BaseSettings):
     def ALGORITHM(self) -> str:
         return self.JWT_ALGORITHM
 
-    # SMTP configuration
+    # SMTP configuration dynamically read from .env
     SMTP_HOST: str = "localhost"
     SMTP_PORT: int = 1025
     SMTP_USER: str = ""
     SMTP_PASSWORD: str = ""
     SMTP_FROM_EMAIL: str = "no-reply@example.com"
+    SMTP_TLS: bool = False
 
 
 settings = Settings()

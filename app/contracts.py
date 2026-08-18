@@ -13,6 +13,7 @@ class UserRead(BaseModel):
     id: uuid.UUID
     email: EmailStr
     role: str | None = None
+    message: str = "A verification email has been sent, if the email provided exists"
 
     model_config = ConfigDict(from_attributes=True)
 

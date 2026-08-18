@@ -24,9 +24,12 @@ router = APIRouter()
     tags=["User Creation"],
 )
 async def create_user(
-    user: contracts.UserCreate, db: Annotated[AsyncSession, Depends(get_db)]
+    user: contracts.UserCreate,
+    request: Request,
+    db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    return await create_new_user(db, user)
+    host_url = str(request.base_url) if request else None
+    return await create_new_user(db, user, host_url=host_url)
 
 
 @router.get("/admin/dashboard", tags=["Admin"])
@@ -78,7 +81,10 @@ async def logout_user(
 @router.post("/auth/verify", tags=["Authentication"])
 async def verify_email(token: str, db: Annotated[AsyncSession, Depends(get_db)]):
     payload = validate_token(token, expected_type="email_verification")
-    user_id = uuid.UUID(payload["sub"])
+    raw_user_id = payload.get("user") or payload.get("sub")
+    if not raw_user_id:
+        raise HTTPException(status_code=400, detail="Invalid token claims")
+    user_id = uuid.UUID(raw_user_id)
 
     user = await db.get(User, user_id)
     if not user:

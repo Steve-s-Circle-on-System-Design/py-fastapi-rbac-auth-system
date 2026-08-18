@@ -38,7 +38,7 @@ def _hash_refresh_token(token: str) -> str:
 def _create_access_token(user_id: uuid.UUID) -> str:
     now = datetime.now(UTC)
     payload = {
-        "sub": str(user_id),
+        "user": str(user_id),
         "type": "access",
         "jti": str(uuid.uuid4()),
         "iat": int(now.timestamp()),
@@ -84,7 +84,9 @@ async def _issue_token_pair(
     )
 
 
-async def create_new_user(db: AsyncSession, user: UserCreate) -> User:
+async def create_new_user(
+    db: AsyncSession, user: UserCreate, host_url: str | None = None
+) -> User:
     # 1. Check if user exists
     query = select(User).where(User.email == user.email)
     result = await db.execute(query)
@@ -109,7 +111,9 @@ async def create_new_user(db: AsyncSession, user: UserCreate) -> User:
 
     # Generate token and trigger verification email automatically
     verification_token = generate_token(new_user.id)
-    await send_email_verification(new_user.email, verification_token, new_user.id, db)
+    await send_email_verification(
+        new_user.email, verification_token, new_user.id, db, host_url=host_url
+    )
     await db.commit()
 
     return new_user
@@ -212,12 +216,17 @@ async def login(
                 ),
             )
         # Resend email if >= 5 minutes (or first unverified attempt after registration)
+        host_url = str(request.base_url) if request else None
         new_token = generate_token(user.id)
-        await send_email_verification(user.email, new_token, user.id, db)
+        await send_email_verification(
+            user.email, new_token, user.id, db, host_url=host_url
+        )
         await db.commit()
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Email not verified. A new verification email has been sent.",
+            detail=(
+                "A verification email has been sent, if a user with this email exists"
+            ),
         )
 
     # 4. Reset lockout counters & update login metadata

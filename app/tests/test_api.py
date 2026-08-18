@@ -36,6 +36,7 @@ def test_create_user_endpoint(client):
     assert response.status_code == 201
     body = response.json()
     assert body["email"] == "api@example.com"
+    assert "verification email" in body["message"]
 
 
 def test_create_user_duplicate_email_returns_400(client):

@@ -22,7 +22,7 @@ from app.tokens import generate_token, validate_token
 
 
 def make_request():
-    return SimpleNamespace(client=None, headers={})
+    return SimpleNamespace(client=None, headers={}, base_url="http://testserver/")
 
 
 # --- Pure unit tests (no DB) ---
@@ -39,7 +39,7 @@ def test_create_access_token_claims():
     payload = json.loads(
         base64.urlsafe_b64decode(token.split(".")[1] + "==").decode("utf-8")
     )
-    assert payload["sub"] == str(uid)
+    assert payload["user"] == str(uid)
     assert payload["type"] == "access"
     assert "jti" in payload
     assert payload["exp"] - payload["iat"] == 15 * 60
@@ -54,7 +54,7 @@ def test_generate_and_validate_token():
     uid = uuid.uuid4()
     token = generate_token(uid)
     payload = validate_token(token)
-    assert payload["sub"] == str(uid)
+    assert payload["user"] == str(uid)
     assert payload["type"] == "email_verification"
 
 
