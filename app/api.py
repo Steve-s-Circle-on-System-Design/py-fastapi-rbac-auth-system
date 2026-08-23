@@ -19,20 +19,16 @@ router = APIRouter()
     status_code=status.HTTP_201_CREATED,
     tags=["User Creation"],
 )
-@Roles(Role.ADMIN)
 async def create_user(
-    user: contracts.UserCreate,
-    db: Annotated[AsyncSession, Depends(get_db)],
-    current_user: Annotated[CurrentUser, Depends(RolesGuard())],
+    user: contracts.UserCreate, db: Annotated[AsyncSession, Depends(get_db)]
 ):
     return await create_new_user(db, user)
 
-
 @router.get("/admin/dashboard", tags=["Admin"])
 @Roles(Role.ADMIN)
-async def admin_dashboard(user: Annotated[CurrentUser, Depends(RolesGuard())]):
+async def admin_dashboard(user: CurrentUser = Depends(RolesGuard())):
     """Example endpoint demonstrating the @Roles + RolesGuard pattern.
-
+ 
     Any endpoint can be locked the same way:
         @router.get("/some/path")
         @Roles(Role.ADMIN)  # or @Roles(Role.ADMIN, Role.USER) for multiple tiers
@@ -40,7 +36,6 @@ async def admin_dashboard(user: Annotated[CurrentUser, Depends(RolesGuard())]):
             ...
     """
     return {"message": "Welcome to the admin dashboard", "user_id": str(user.id)}
-
 
 @router.post("/auth/login", response_model=contracts.TokenPair, tags=["Authentication"])
 async def login_user(
