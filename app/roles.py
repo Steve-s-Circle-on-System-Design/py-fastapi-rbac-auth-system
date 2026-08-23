@@ -21,10 +21,18 @@ Order matters: `@Roles(...)` must sit *above* the route decorator
 matching how you're already used to stacking decorators in Nest.
 """
 
+import enum
 from collections.abc import Callable
 from typing import TypeVar
 
-from app.models import UserRole as Role  # noqa: F401  (re-exported for `from app.roles import Role`)
+
+class Role(enum.StrEnum):
+    """Application roles, carried inside the JWT `role` claim."""
+
+    ADMIN = "admin"
+    MANAGER = "manager"
+    USER = "user"
+
 
 ROLES_METADATA_KEY = "__required_roles__"
 
