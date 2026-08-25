@@ -19,8 +19,11 @@ router = APIRouter()
     status_code=status.HTTP_201_CREATED,
     tags=["User Creation"],
 )
+@Roles(Role.ADMIN)
 async def create_user(
-    user: contracts.UserCreate, db: Annotated[AsyncSession, Depends(get_db)]
+    user: contracts.UserCreate,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[CurrentUser, Depends(RolesGuard())],
 ):
     return await create_new_user(db, user)
 

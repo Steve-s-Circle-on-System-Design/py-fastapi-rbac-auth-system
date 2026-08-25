@@ -8,11 +8,13 @@ dependencies = [
     "alembic>=1.18.5",
     "asyncpg>=0.31.0",
     "bcrypt==4.0.1",
+    "fakeredis>=2.20.0",
     "fastapi[standard]>=0.139.0",
     "psycopg2>=2.9.12",
     "psycopg[binary]>=3.3.4",
     "pyjwt>=2.13.0",
     "python-dotenv>=1.2.2",
+    "redis>=8.1.0",
     "ruff>=0.15.20",
     "scalar-fastapi>=1.8.2",
     "sqlalchemy>=2.0.51",
@@ -53,6 +55,7 @@ indent-style = "space"
 [dependency-groups]
 dev = [
     "bandit>=1.9.4",
+    "fakeredis>=2.37.0",
     "httpx>=0.28.1",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
