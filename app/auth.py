@@ -13,6 +13,7 @@ from app.config import settings
 from app.contracts import LoginRequest, TokenPair, UserCreate
 from app.hash import hash_password, verify_password
 from app.models import RefreshToken, RevokeReasonEnum, User
+from app.redis_store import token_store
 from app.tokens import (
     generate_token,
     get_last_verification_token,
@@ -67,18 +68,35 @@ async def _issue_token_pair(
     parent_token_id: uuid.UUID | None = None,
 ) -> TokenPair:
     raw_refresh_token = secrets.token_urlsafe(48)
+    token_hash = _hash_refresh_token(raw_refresh_token)
     ip_address, user_agent = _request_metadata(request)
-    db.add(
-        RefreshToken(
-            user_id=user.id,
-            token_hash=_hash_refresh_token(raw_refresh_token),
-            token_family=token_family or str(uuid.uuid4()),
-            parent_token_id=parent_token_id,
-            ip_address=ip_address,
-            user_agent=user_agent,
-            expires_at=datetime.now(UTC) + REFRESH_TOKEN_LIFETIME,
-        )
+    tf = token_family or str(uuid.uuid4())
+
+    db_refresh_token = RefreshToken(
+        user_id=user.id,
+        token_hash=token_hash,
+        token_family=tf,
+        parent_token_id=parent_token_id,
+        ip_address=ip_address,
+        user_agent=user_agent,
+        expires_at=datetime.now(UTC) + REFRESH_TOKEN_LIFETIME,
     )
+    db.add(db_refresh_token)
+
+    # Redis Token Store session creation
+    session_data = {
+        "user_id": str(user.id),
+        "token_family": tf,
+        "parent_token_id": str(parent_token_id) if parent_token_id else None,
+        "ip_address": ip_address,
+        "user_agent": user_agent,
+    }
+    await token_store.store_refresh_token(
+        token_hash=token_hash,
+        session_data=session_data,
+        ttl_seconds=int(REFRESH_TOKEN_LIFETIME.total_seconds()),
+    )
+
     return TokenPair(
         access_token=_create_access_token(user.id), refresh_token=raw_refresh_token
     )
@@ -152,7 +170,7 @@ async def authenticate_user(db: AsyncSession, credentials: LoginRequest) -> User
 
         # 5th failure = 15-minute lockout
         if user.login_attempts >= 5:
-            user.lockout_until = now + timedelta(minutes=15)
+            user.lockout_until = now + timedelta(minutes=5)
 
         await db.commit()
         raise HTTPException(
@@ -244,70 +262,121 @@ async def refresh_token(
     db: AsyncSession, raw_refresh_token: str, request: Request
 ) -> TokenPair:
     token_hash = _hash_refresh_token(raw_refresh_token)
-    # Locking prevents two simultaneous requests from rotating the same token.
+
+    # 1. Reuse detection via Redis
+    if await token_store.is_token_used(token_hash):
+        # A rotated token was presented again! Invalidate all Redis sessions for user.
+        result = await db.execute(
+            select(RefreshToken).where(RefreshToken.token_hash == token_hash)
+        )
+        db_token = result.scalars().first()
+        if db_token:
+            await token_store.revoke_user_sessions(str(db_token.user_id))
+            await db.execute(
+                update(RefreshToken)
+                .where(
+                    RefreshToken.user_id == db_token.user_id,
+                    RefreshToken.is_revoked.is_(False),
+                    RefreshToken.revoked_at.is_(None),
+                )
+                .values(
+                    is_revoked=True,
+                    revoked_at=datetime.now(UTC),
+                    revoke_reason=RevokeReasonEnum.token_reuse,
+                )
+            )
+            await db.commit()
+        raise _unauthorized()
+
+    # 2. Retrieve session from Redis
+    session_data = await token_store.get_refresh_token(token_hash)
+    if session_data is None:
+        # Check DB to see if this was a previously revoked token (reuse signal)
+        result = await db.execute(
+            select(RefreshToken).where(RefreshToken.token_hash == token_hash)
+        )
+        db_token = result.scalars().first()
+        if db_token and (db_token.is_revoked or db_token.revoked_at is not None):
+            await token_store.revoke_user_sessions(str(db_token.user_id))
+            await db.execute(
+                update(RefreshToken)
+                .where(
+                    RefreshToken.user_id == db_token.user_id,
+                    RefreshToken.is_revoked.is_(False),
+                    RefreshToken.revoked_at.is_(None),
+                )
+                .values(
+                    is_revoked=True,
+                    revoked_at=datetime.now(UTC),
+                    revoke_reason=RevokeReasonEnum.token_reuse,
+                )
+            )
+            await db.commit()
+        raise _unauthorized()
+
+    user_id = uuid.UUID(session_data["user_id"])
+    token_family = session_data.get("token_family")
+
+    # Mark token used in Redis for rotation tracking & reuse protection
+    await token_store.mark_token_used(
+        token_hash, int(REFRESH_TOKEN_LIFETIME.total_seconds())
+    )
+    # Revoke old refresh token session from Redis
+    await token_store.revoke_refresh_token(token_hash)
+
+    # Sync PostgreSQL DB model for audit logging
     result = await db.execute(
         select(RefreshToken)
         .where(RefreshToken.token_hash == token_hash)
         .with_for_update()
     )
-    token = result.scalars().first()
-    if token is None:
-        raise _unauthorized()
+    db_token = result.scalars().first()
+    parent_token_id = None
+    if db_token:
+        db_token.revoke(RevokeReasonEnum.rotated)
+        parent_token_id = db_token.id
 
-    now = datetime.now(UTC)
-    if token.is_revoked or token.revoked_at is not None:
-        # A previously rotated, logged-out, or otherwise revoked token is a
-        # reuse signal. Terminate every still-active refresh session for this user.
-        await db.execute(
-            update(RefreshToken)
-            .where(
-                RefreshToken.user_id == token.user_id,
-                RefreshToken.is_revoked.is_(False),
-                RefreshToken.revoked_at.is_(None),
-            )
-            .values(
-                is_revoked=True,
-                revoked_at=now,
-                revoke_reason=RevokeReasonEnum.token_reuse,
-            )
-        )
-        await db.commit()
-        raise _unauthorized()
-
-    if token.expires_at <= now:
-        token.revoke(RevokeReasonEnum.expired)
-        await db.commit()
-        raise _unauthorized()
-
-    token.revoke(RevokeReasonEnum.rotated)
-    user = await db.get(User, token.user_id)
+    user = await db.get(User, user_id)
     if user is None:
         await db.rollback()
         raise _unauthorized()
+
     tokens = await _issue_token_pair(
         db,
         user,
         request,
-        token_family=token.token_family,
-        parent_token_id=token.id,
+        token_family=token_family,
+        parent_token_id=parent_token_id,
     )
     await db.commit()
     return tokens
 
 
 async def logout(db: AsyncSession, raw_refresh_token: str) -> None:
+    token_hash = _hash_refresh_token(raw_refresh_token)
+
+    # Check session in Redis
+    session_data = await token_store.get_refresh_token(token_hash)
+
     result = await db.execute(
         select(RefreshToken)
-        .where(RefreshToken.token_hash == _hash_refresh_token(raw_refresh_token))
+        .where(RefreshToken.token_hash == token_hash)
         .with_for_update()
     )
-    token = result.scalars().first()
-    if (
-        token is None
-        or token.is_revoked
-        or token.revoked_at is not None
-        or token.expires_at <= datetime.now(UTC)
+    db_token = result.scalars().first()
+
+    if session_data is None and (
+        db_token is None
+        or db_token.is_revoked
+        or db_token.revoked_at is not None
+        or db_token.expires_at <= datetime.now(UTC)
     ):
         raise _unauthorized()
-    token.revoke(RevokeReasonEnum.logout)
-    await db.commit()
+
+    # Revoke token session in Redis
+    await token_store.revoke_refresh_token(token_hash)
+
+    if db_token and not db_token.is_revoked:
+        db_token.revoke(RevokeReasonEnum.logout)
+        await db.commit()
+

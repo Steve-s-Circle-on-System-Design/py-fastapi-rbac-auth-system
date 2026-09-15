@@ -1,10 +1,17 @@
+import uuid
 from fastapi.testclient import TestClient
 
 from app.config import settings
 from app.main import app
-from app.tokens import generate_token
+from app.roles import Role
+from app.security import create_access_token
 
 plain_client = TestClient(app)
+
+
+def auth_headers(role: Role) -> dict[str, str]:
+    token = create_access_token(user_id=uuid.uuid4(), role=role)
+    return {"Authorization": f"Bearer {token}"}
 
 
 def test_docs_page_served():
@@ -28,10 +35,11 @@ def test_unknown_route_returns_404():
     assert response.status_code == 404
 
 
-def test_create_user_endpoint(client):
+def test_create_user_endpoint_by_admin(client):
     response = client.post(
         f"{settings.API_V1_STR}/users",
         json={"email": "api@example.com", "password": "s3cret!"},
+        headers=auth_headers(Role.ADMIN),
     )
     assert response.status_code == 201
     body = response.json()
@@ -39,10 +47,40 @@ def test_create_user_endpoint(client):
     assert "verification email" in body["message"]
 
 
+def test_create_user_by_non_admin_returns_403(client):
+    response = client.post(
+        f"{settings.API_V1_STR}/users",
+        json={"email": "api@example.com", "password": "s3cret!"},
+        headers=auth_headers(Role.USER),
+    )
+    assert response.status_code == 403
+    assert response.json()["detail"] == "You do not have permission to access this resource."
+
+
+def test_create_user_unauthenticated_returns_401(client):
+    response = client.post(
+        f"{settings.API_V1_STR}/users",
+        json={"email": "api@example.com", "password": "s3cret!"},
+    )
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Not authenticated"
+
+
 def test_create_user_duplicate_email_returns_400(client):
     payload = {"email": "dup@example.com", "password": "s3cret!"}
-    assert client.post(f"{settings.API_V1_STR}/users", json=payload).status_code == 201
-    response = client.post(f"{settings.API_V1_STR}/users", json=payload)
+    assert (
+        client.post(
+            f"{settings.API_V1_STR}/users",
+            json=payload,
+            headers=auth_headers(Role.ADMIN),
+        ).status_code
+        == 201
+    )
+    response = client.post(
+        f"{settings.API_V1_STR}/users",
+        json=payload,
+        headers=auth_headers(Role.ADMIN),
+    )
     assert response.status_code == 400
 
 
@@ -50,6 +88,7 @@ def test_verification_endpoint_and_login_flow(client):
     res = client.post(
         f"{settings.API_V1_STR}/users",
         json={"email": "login@example.com", "password": "s3cret!"},
+        headers=auth_headers(Role.ADMIN),
     )
     assert res.status_code == 201
     user_id = res.json()["id"]

@@ -26,10 +26,13 @@ from collections.abc import Callable
 from typing import TypeVar
 
 
-class Role(enum.StrEnum):
-    ADMIN = "admin"
-    USER = "user"
+class Role(str, enum.Enum):
+    ADMIN = "ADMIN"
+    USER = "USER"
 
+
+# Alias for compatibility with tests expecting UserRole enum
+UserRole = Role
 
 ROLES_METADATA_KEY = "__required_roles__"
 

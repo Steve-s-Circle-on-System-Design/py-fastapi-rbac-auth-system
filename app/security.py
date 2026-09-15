@@ -1,4 +1,5 @@
-"""Minimal JWT access-token handling.
+"""
+Minimal JWT access-token handling.
 
 `get_current_user` is the FastAPI equivalent of Nest's Passport JWT
 strategy attaching a validated payload to `request.user`: it decodes the
@@ -14,7 +15,6 @@ endpoint once that lands.
 
 import uuid
 from datetime import UTC, datetime, timedelta
-from typing import Annotated
 
 import jwt
 from fastapi import Depends, HTTPException, status
@@ -22,6 +22,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
 from app.config import settings
+from app.redis_store import token_store
 from app.roles import Role
 
 bearer_scheme = HTTPBearer(auto_error=False)
@@ -35,15 +36,20 @@ class CurrentUser(BaseModel):
 
 
 def create_access_token(user_id: uuid.UUID, role: Role) -> str:
-    expire = datetime.now(UTC) + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
-    payload = {"user": str(user_id), "role": role.value, "exp": expire}
-    return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+    now = datetime.now(UTC)
+    expire = now + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+    payload = {
+        "sub": str(user_id),
+        "role": role.value,
+        "iat": int(now.timestamp()),
+        "exp": expire,
+        "jti": str(uuid.uuid4()),
+    }
+    return jwt.encode(payload, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
 
 
 async def get_current_user(
-    credentials: Annotated[
-        HTTPAuthorizationCredentials | None, Depends(bearer_scheme)
-    ] = None,
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
 ) -> CurrentUser:
     if credentials is None:
         raise HTTPException(
@@ -54,13 +60,27 @@ async def get_current_user(
     try:
         payload = jwt.decode(
             credentials.credentials,
-            settings.SECRET_KEY,
-            algorithms=[settings.ALGORITHM],
+            settings.JWT_SECRET_KEY,
+            algorithms=[settings.JWT_ALGORITHM],
         )
-        user_id_str = payload.get("user") or payload.get("sub")
-        if not user_id_str:
-            raise KeyError("user")
-        return CurrentUser(id=uuid.UUID(user_id_str), role=Role(payload["role"]))
+        user_id = str(payload["sub"])
+        iat = int(payload.get("iat", 0))
+        jti = payload.get("jti")
+
+        # Session invalidation check in Redis
+        is_revoked = await token_store.is_access_token_revoked(
+            user_id=user_id, iat=iat, jti=jti
+        )
+        if is_revoked:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Token has been revoked or session invalidated",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
+        return CurrentUser(id=uuid.UUID(user_id), role=Role(payload["role"]))
+    except HTTPException:
+        raise
     except (jwt.PyJWTError, KeyError, ValueError) as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

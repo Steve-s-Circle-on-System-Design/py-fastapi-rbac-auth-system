@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api import router
-from app.roles import Role as UserRole
+from app.roles import UserRole
 from app.security import create_access_token
 
 app = FastAPI()

@@ -7,9 +7,12 @@ import pytest_asyncio
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
+import fakeredis.aioredis as fakeredis
+
 import app.models  # noqa: F401  (registers all tables on Base.metadata)
 from app.config import settings
 from app.database import Base
+from app.redis_store import set_redis_client
 
 # Tests run against a dedicated database, never the dev database the app
 # points at. conftest swaps the database name in DATABASE_URL and creates the
@@ -59,6 +62,15 @@ test_engine = create_async_engine(
 TestSessionLocal = async_sessionmaker(test_engine, expire_on_commit=False)
 
 
+@pytest_asyncio.fixture(autouse=True)
+async def redis_client():
+    fake = fakeredis.FakeRedis(decode_responses=True)
+    set_redis_client(fake)
+    yield fake
+    await fake.aclose()
+    set_redis_client(None)
+
+
 @pytest_asyncio.fixture
 async def prepared_database():
     async with test_engine.begin() as conn:
@@ -76,7 +88,7 @@ async def db_session(prepared_database):
 
 
 @pytest.fixture
-def client(prepared_database):
+def client(prepared_database, redis_client):
     from fastapi.testclient import TestClient
 
     from app.database import get_db
@@ -89,3 +101,4 @@ def client(prepared_database):
     app.dependency_overrides[get_db] = _override_get_db
     yield TestClient(app)
     app.dependency_overrides.pop(get_db, None)
+

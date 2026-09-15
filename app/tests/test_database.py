@@ -10,8 +10,9 @@ def test_engine_is_async():
 
 
 @pytest.mark.asyncio
-async def test_get_db_yields_session():
-    async for db in get_db():
-        assert isinstance(db, AsyncSession)
-        result = await db.execute(text("SELECT 1"))
-        assert result.scalar() == 1
+async def test_get_db_yields_session(db_session):
+    assert isinstance(db_session, AsyncSession)
+    result = await db_session.execute(text("SELECT 1"))
+    assert result.scalar() == 1
+
+

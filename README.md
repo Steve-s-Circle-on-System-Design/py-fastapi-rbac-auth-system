@@ -32,6 +32,7 @@ A general-purpose, tenant-ready authentication and authorization backend built w
 | Layer | Technology |
 |---|---|
 | Web framework | FastAPI |
+| Session & Token Store | Redis (`redis-py` / `fakeredis`) |
 | ORM | SQLAlchemy 2.0 (async) |
 | DB driver | `asyncpg` (PostgreSQL) |
 | Migrations | Alembic |
@@ -48,22 +49,24 @@ flowchart LR
     Client([Client]) --> FastAPI[FastAPI app<br/>main.py]
     FastAPI --> Router[API Router<br/>api.py]
     Router --> AuthLogic[Business logic<br/>auth.py]
+    Router --> Guards[RolesGuard<br/>guards.py]
+    AuthLogic --> Redis[(Redis Token Store<br/>redis_store.py)]
     AuthLogic --> DB[(PostgreSQL)]
     AuthLogic --> Hash[hash.py<br/>bcrypt]
+    Guards --> Security[security.py<br/>JWT + Redis Session Check]
     Router -.validates.-> Contracts[contracts.py<br/>Pydantic schemas]
     FastAPI --> Config[config.py<br/>Settings]
     Config -.reads.-> EnvFile[.env]
 ```
 
-**Current implementation status:** only one endpoint exists — `POST /users` (user creation). Login, logout, and permission-checking middleware are on the roadmap (see [§11](#11-roadmap)).
+**Current implementation status:** endpoints implemented include `POST /users` (user registration), `POST /auth/login`, `POST /auth/refresh`, `POST /auth/logout`, and `@Roles(Role.ADMIN)` protected `GET /admin/dashboard`.
 
 ### Security layer (as implemented today)
 
 - Passwords are hashed with `bcrypt` (`hash.py`) — never stored or compared in plaintext.
-- `User.role` is a simple `StrEnum` (`USER` / `ADMIN`) stored directly on the `users` table.
-- `RefreshToken` rows exist and are linked to a user, with an `expires_at` timestamp and an `is_revoked` boolean flag.
-
-**Important gap:** there is currently no code path that *issues*, *validates*, or *revokes* a refresh token, and no field capturing *why* a token was revoked. The target design for this (with `LOGOUT` / `TOKEN_REUSE` reasons) is documented in [§6](#6-refresh-token-lifecycle) as a build target, not a description of existing behavior.
+- `User.role` is a `StrEnum` (`USER` / `ADMIN`) enforced via `@Roles(...)` decorator and `RolesGuard`.
+- Refresh tokens, session metadata, token rotation reuse flags, and access token revocation timestamps are managed in Redis via `RedisTokenStore` (`app/redis_store.py`) with native TTL eviction matching token lifetimes.
+- Token rotation and reuse detection automatically trigger instant user-wide session invalidations in Redis and record revocation audit reasons in PostgreSQL (`RevokeReasonEnum.token_reuse`).
 
 ### Toolchain
 
@@ -88,11 +91,21 @@ templates/rbac-auth/
 │   ├── guards.py               # RolesGuard — reads @Roles metadata, enforces it against the current user
 │   ├── hash.py                # Password hashing/verification (bcrypt)
 │   ├── models.py              # SQLAlchemy ORM models (User, RefreshToken, EmailLog)
+│   ├── redis_store.py          # RedisTokenStore — session storage, TTL eviction, token reuse & access token revocation
 │   ├── roles.py                # Role re-export + the @Roles(...) decorator
 │   ├── security.py             # JWT create/decode, get_current_user ("passport" payload)
 │   └── tests/
-│       ├── tests_main.py      # API tests
-│       └── test_roles_guard.py # Verifies admin=200, user=403, no-token=401 on a guarded route
+│       ├── conftest.py         # Test fixtures (async DB, NullPool, FakeRedis isolation)
+│       ├── test_api.py         # End-to-end endpoint integration tests (/users, /auth/*, /admin/*)
+│       ├── test_auth.py        # Token issuance, rotation, reuse detection, & logout tests
+│       ├── test_config.py      # Pydantic Settings configuration tests
+│       ├── test_contracts.py   # Request/response schema validation tests
+│       ├── test_database.py    # Async SQLAlchemy database engine & get_db tests
+│       ├── test_hash.py        # Bcrypt password hashing & verification tests
+│       ├── test_models.py      # SQLAlchemy ORM models & state machine tests
+│       ├── test_redis_store.py # RedisTokenStore session lifecycle & TTL eviction tests
+│       └── test_roles_guard.py # Verifies admin=200, user=403, no-token=401 on guarded routes
+
 ├── migrations/
 │   ├── versions/
 │   │   └── cfa269117122_initial_migration.py
@@ -118,6 +131,7 @@ templates/rbac-auth/
 | `auth.py` | Business/domain logic — DB reads/writes, uniqueness checks, error handling | `models.py`, `hash.py`, `contracts.py` |
 | `contracts.py` | Pydantic schemas — the **only** shapes that should cross the API boundary | — |
 | `models.py` | SQLAlchemy ORM table definitions and enums — the schema source of truth for Alembic autogenerate | `database.py` |
+| `redis_store.py` | `RedisTokenStore` — session storage, TTL eviction, user session sets, and access token invalidation checks | `config.py`, `redis` |
 | `database.py` | Async engine + session factory + `Base` + `get_db()` FastAPI dependency | `config.py` |
 | `config.py` | Typed settings loaded from `.env` via `pydantic-settings` | `.env` |
 | `hash.py` | Password hashing/verification helpers, isolated so the hashing algorithm can change in one place | `bcrypt` |
@@ -151,6 +165,12 @@ erDiagram
         uuid id PK
         uuid user_id FK
         string token_hash
+        string token_family
+        uuid parent_token_id FK
+        string ip_address
+        string user_agent
+        enum revoke_reason
+        datetime revoked_at
         datetime expires_at
         bool is_revoked
     }
@@ -301,7 +321,7 @@ Recommended implementation: a small `can_transition(current, target) -> bool` gu
 
 ### Current state (implemented)
 
-`RefreshToken` has `token_hash`, `expires_at`, and `is_revoked: bool`. There is no field recording *why* a token was revoked, and no code path yet issues, rotates, or revokes tokens.
+`RefreshToken` state and session invalidation are abstracted to Redis (`app/redis_store.py`). Active session tokens, user session sets (`user_sessions:<user_id>`), rotation reuse flags, and access token revocation timestamps are stored in Redis with automatic TTL eviction matching token lifetimes. Token reuse automatically revokes all active sessions for that user in Redis and updates DB audit records (`RevokeReasonEnum.token_reuse`).
 
 ### Target design (planned)
 
@@ -368,7 +388,7 @@ alembic current
 | `.pre-commit-config.yaml` | Registers `ruff` hooks to run automatically on `git commit`. |
 | `.python-version` | Pins the Python version for local tooling (e.g. `pyenv`, `uv`). |
 
-`app/config.py` loads `.env` into a typed `Settings` object at import time via `pydantic-settings`. Required variables today: `PROJECT_NAME`, `API_V1_STR`, `DATABASE_URL`. Add new required settings here first — the app will fail fast at startup if they're missing, which is intentional.
+`app/config.py` loads `.env` into a typed `Settings` object at import time via `pydantic-settings`. Configured settings: `PROJECT_NAME`, `API_V1_STR`, `DATABASE_URL`, `REDIS_URL` (default `redis://localhost:6379/0`), `ACCESS_TOKEN_EXPIRE_MINUTES`, `JWT_SECRET_KEY` (with `SECRET_KEY` fallback alias), `JWT_ALGORITHM`. Add new required settings here first — the app will fail fast at startup if they're missing, which is intentional.
 
 ---
 
@@ -418,14 +438,14 @@ Tracking the sprint outline against current implementation. As of this update, t
 | Tenant-scoping middleware (auto-filter every query by requester's org) | Wk 2, Day 2 | 🔲 Not started |
 | Tests proving Org A can never read Org B's data, even with a forged ID | Wk 2, Day 2 | 🔲 Not started |
 | Centralized tenant-scoping (base repository/query-builder) | Wk 2, Day 3 (refactor) | 🔲 Not started |
-| Sessions table with revocation reason (`LOGOUT`, `TOKEN_REUSE`, …) | — | 🔲 Not started — target design in [§6](#6-refresh-token-lifecycle) |
-| Login endpoint | — | 🔲 Not started |
-| Session blackout / logout endpoint | — | 🔲 Not started |
+| Sessions table with revocation reason (`LOGOUT`, `TOKEN_REUSE`, …) | — | ✅ Implemented — Session state and revocation abstracted to Redis (`app/redis_store.py`) with automatic TTL eviction & DB audit logs |
+| Login endpoint | — | ✅ Implemented (`POST /auth/login`) |
+| Session blackout / logout endpoint | — | ✅ Implemented (`POST /auth/logout` & `POST /auth/refresh`) |
 | Full API surface for Users + Roles + Permissions + Organizations as one product | Wk 3 | 🔲 Not started (Mini-Project 1) |
 | Consistency pass: pagination, error shape, auth pattern across all endpoints | Wk 3, Day 3 (refactor) | 🔲 Not started |
 | Email log enforced state machine | — | 🔲 Schema exists, transitions not enforced in code |
-| Tests for API endpoints | — | 🟡 Partial — `tests_main.py` exists, coverage TBD |
-| Auth contracts (request/response schemas) | — | 🟡 Partial — only `UserCreate`/`UserRead` exist |
+| Tests for API endpoints | — | ✅ Implemented — 58 unit & integration tests passing with 94.73% coverage in `app/tests/` |
+| Auth contracts (request/response schemas) | — | ✅ Implemented — `LoginRequest`, `RefreshTokenRequest`, `TokenPair`, `UserCreate`, `UserRead` |
 
 When an item here ships, update its status **and** add a line to the Iteration Log below in the same PR.
 
@@ -438,3 +458,4 @@ Append-only. One line per meaningful change — date, what changed, who. Don't e
 - **2026-07-21** — Initial architecture documentation written: current-state vs. target-design split established for RBAC, email log state machine, and refresh token lifecycle. *(@you)*
 - **2026-07-21** — Roadmap re-mapped against the 90-Day curriculum, Weeks 1–3 (RBAC Core, Multi-Tenancy, SaaS Backend integration); each item now traces to a specific curriculum day. Weeks 4–12 tracked separately at the repo level. *(@you)*
 - **2026-07-28** — Implemented the declarative `@Roles(...)` decorator + `RolesGuard` FastAPI dependency (`app/roles.py`, `app/guards.py`), backed by a minimal JWT `get_current_user` (`app/security.py`). Wired onto an example `/admin/dashboard` route in `api.py`. Verified via `app/tests/test_roles_guard.py`: admin → 200, standard user → 403, no token → 401. Enforces the current single-enum `role` field only — will need to change to a permission-set check once the `Role`/`Permission` tables land. *(@you)*
+- **2026-08-13** — Abstracted token handling and session invalidation to Redis (`app/redis_store.py`). Refresh tokens, active session sets, token rotation reuse flags, and access token blocklists are now managed with automatic Redis TTL eviction. Refactored `auth.py` and `security.py` to handle login, token rotation, single token logout, and user session revocation via Redis while maintaining DB audit logs. Added `REDIS_URL` to `config.py` and integrated `fakeredis` for test isolation. 100% of test suite passing (58 tests, 94.73% coverage). *(@you)*
