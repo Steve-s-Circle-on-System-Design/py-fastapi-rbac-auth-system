@@ -27,6 +27,7 @@ def test_openapi_contains_expected_paths():
     assert f"{settings.API_V1_STR}/auth/login" in paths
     assert f"{settings.API_V1_STR}/auth/refresh" in paths
     assert f"{settings.API_V1_STR}/auth/logout" in paths
+    assert f"{settings.API_V1_STR}/auth/verify" in paths
 
 
 def test_unknown_route_returns_404():
@@ -43,6 +44,7 @@ def test_create_user_endpoint_by_admin(client):
     assert response.status_code == 201
     body = response.json()
     assert body["email"] == "api@example.com"
+    assert "verification email" in body["message"]
 
 
 def test_create_user_by_non_admin_returns_403(client):
@@ -82,12 +84,30 @@ def test_create_user_duplicate_email_returns_400(client):
     assert response.status_code == 400
 
 
-def test_login_endpoint_returns_token_pair(client):
-    client.post(
+def test_verification_endpoint_and_login_flow(client):
+    res = client.post(
         f"{settings.API_V1_STR}/users",
         json={"email": "login@example.com", "password": "s3cret!"},
         headers=auth_headers(Role.ADMIN),
     )
+    assert res.status_code == 201
+    user_id = res.json()["id"]
+
+    # Before verification, login fails with 429 (within 5 mins of registration email)
+    unverified_login = client.post(
+        f"{settings.API_V1_STR}/auth/login",
+        json={"email": "login@example.com", "password": "s3cret!"},
+    )
+    assert unverified_login.status_code == 429
+
+    # Verify user via token
+    token = generate_token(user_id)
+    verify_res = client.get(
+        f"{settings.API_V1_STR}/auth/verify", params={"token": token}
+    )
+    assert verify_res.status_code == 200
+
+    # Now login succeeds
     response = client.post(
         f"{settings.API_V1_STR}/auth/login",
         json={"email": "login@example.com", "password": "s3cret!"},

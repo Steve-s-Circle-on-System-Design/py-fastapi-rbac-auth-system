@@ -51,4 +51,4 @@ def Roles(*roles: Role) -> Callable[[F], F]:
 
 def get_required_roles(endpoint: Callable) -> tuple[Role, ...]:
     """Read back the roles attached by `@Roles(...)`. Empty tuple = no restriction."""
-    return getattr(endpoint, ROLES_METADATA_KEY, ())
+    return getattr(endpoint, ROLES_METADATA_KEY, ())
