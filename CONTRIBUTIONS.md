@@ -163,7 +163,7 @@ By participating in this project, you agree to abide by our Code of Conduct. Ple
 
     ✅ Update CONTRIBUTIONS.md for developer-facing changes
 
-    ✅ Add JSDoc comments to new functions and classes
+    ✅ Add Module and Class Docstring comments to new functions and classes
 
     ✅ Include OpenAPI/Swagger annotations for all endpoints
 
