@@ -1,9 +1,18 @@
+from enum import StrEnum
 from pathlib import Path
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BASE_DIR = Path(__file__).resolve().parent
+
+
+class BootstrapMode(StrEnum):
+    """How the first admin is created on a fresh deployment."""
+
+    OFF = "off"
+    ENV = "env"
+    HTTP = "http"
 
 
 class Settings(BaseSettings):
@@ -45,6 +54,11 @@ class Settings(BaseSettings):
     SMTP_FROM_EMAIL: str = "no-reply@example.com"
     SMTP_TLS: bool = False
 
+    # Bootstrap admin (first admin on a fresh deployment)
+    BOOTSTRAP_MODE: BootstrapMode = BootstrapMode.OFF
+    BOOTSTRAP_ADMIN_EMAIL: str | None = None
+    BOOTSTRAP_ADMIN_PASSWORD: str | None = None
+    BOOTSTRAP_TOKEN: str | None = None
+
 
 settings = Settings()
-

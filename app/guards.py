@@ -39,7 +39,7 @@ class RolesGuard:
         endpoint = getattr(route, "endpoint", None)
         required_roles = get_required_roles(endpoint) if endpoint else ()
 
-        if required_roles and current_user.role not in required_roles:
+        if required_roles and not current_user.roles.intersection(required_roles):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="You do not have permission to access this resource.",

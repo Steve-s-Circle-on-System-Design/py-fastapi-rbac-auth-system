@@ -13,7 +13,7 @@ client = TestClient(app)
 
 
 def auth_headers(role: UserRole) -> dict[str, str]:
-    token = create_access_token(user_id=uuid.uuid4(), role=role)
+    token = create_access_token(user_id=uuid.uuid4(), roles=[role])
     return {"Authorization": f"Bearer {token}"}
 
 

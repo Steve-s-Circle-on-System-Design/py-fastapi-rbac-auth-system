@@ -1,16 +1,18 @@
 import uuid
+
 from fastapi.testclient import TestClient
 
 from app.config import settings
 from app.main import app
 from app.roles import Role
 from app.security import create_access_token
+from app.tokens import generate_token
 
 plain_client = TestClient(app)
 
 
 def auth_headers(role: Role) -> dict[str, str]:
-    token = create_access_token(user_id=uuid.uuid4(), role=role)
+    token = create_access_token(user_id=uuid.uuid4(), roles=[role])
     return {"Authorization": f"Bearer {token}"}
 
 
@@ -54,7 +56,10 @@ def test_create_user_by_non_admin_returns_403(client):
         headers=auth_headers(Role.USER),
     )
     assert response.status_code == 403
-    assert response.json()["detail"] == "You do not have permission to access this resource."
+    assert (
+        response.json()["detail"]
+        == "You do not have permission to access this resource."
+    )
 
 
 def test_create_user_unauthenticated_returns_401(client):

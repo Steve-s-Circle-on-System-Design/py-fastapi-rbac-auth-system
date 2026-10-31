@@ -4,6 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from app import contracts
+from app.config import settings
 
 
 def test_user_create_accepts_valid_input():
@@ -35,10 +36,10 @@ def test_token_pair_serializes_with_aliases():
         "accessToken": "at",
         "refreshToken": "rt",
         "tokenType": "bearer",
-        "expiresIn": 900,
+        "expiresIn": settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
     }
 
 
 def test_user_read_from_attributes():
-    user = contracts.UserRead(id=uuid.uuid4(), email="a@example.com", role="USER")
-    assert user.role == "USER"
+    user = contracts.UserRead(id=uuid.uuid4(), email="a@example.com", roles=["USER"])
+    assert user.roles == ["USER"]

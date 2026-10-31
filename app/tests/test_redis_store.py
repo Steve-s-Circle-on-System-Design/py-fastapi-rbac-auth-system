@@ -1,6 +1,8 @@
 import uuid
 from datetime import UTC, datetime
+
 import pytest
+
 from app.redis_store import RedisTokenStore
 
 

@@ -27,9 +27,10 @@ def set_redis_client(client: redis.Redis | None) -> None:
 
 class RedisTokenStore:
     """Redis-backed token and session lifecycle manager.
-    
-    Handles session storage, automatic TTL expiration, single token invalidation (logout),
-    user-wide session revocation, access token blocklisting, and rotation reuse detection.
+
+    Handles session storage, automatic TTL expiration, single token
+    invalidation (logout), user-wide session revocation, access token
+    blocklisting, and rotation reuse detection.
     """
 
     def __init__(self, client: redis.Redis | None = None) -> None:
@@ -51,7 +52,7 @@ class RedisTokenStore:
         user_sessions_key = f"user_sessions:{user_id}"
 
         session_json = json.dumps(session_data)
-        
+
         # Pipelines execute commands atomically in a single Redis roundtrip
         async with self.redis.pipeline(transaction=True) as pipe:
             pipe.set(key, session_json, ex=ttl_seconds)
@@ -74,7 +75,7 @@ class RedisTokenStore:
         """Revoke/delete a single refresh token session (e.g. on logout)."""
         session_data = await self.get_refresh_token(token_hash)
         key = f"refresh_token:{token_hash}"
-        
+
         async with self.redis.pipeline(transaction=True) as pipe:
             pipe.delete(key)
             if session_data and "user_id" in session_data:
@@ -96,12 +97,17 @@ class RedisTokenStore:
     async def revoke_user_sessions(
         self,
         user_id: str,
-        access_token_ttl: int = 1800,
+        access_token_ttl: int | None = None,
     ) -> None:
-        """Revoke all active refresh sessions for a user and mark user access tokens invalidated."""
+        """Revoke a user's refresh sessions and invalidate their access tokens.
+
+        `access_token_ttl` defaults to the configured access-token lifetime.
+        """
+        if access_token_ttl is None:
+            access_token_ttl = settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60
         user_sessions_key = f"user_sessions:{user_id}"
         active_token_hashes = await self.redis.smembers(user_sessions_key)
-        
+
         now_ts = int(datetime.now(UTC).timestamp())
         user_revoked_key = f"user_revoked_at:{user_id}"
 
@@ -119,7 +125,7 @@ class RedisTokenStore:
         iat: int,
         jti: str | None = None,
     ) -> bool:
-        """Check if an access token has been revoked explicitly via JTI or user-wide revocation."""
+        """Check if an access token was revoked by JTI or user-wide revocation."""
         if jti:
             jti_key = f"revoked_jti:{jti}"
             if await self.redis.get(jti_key):

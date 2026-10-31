@@ -26,7 +26,7 @@ from collections.abc import Callable
 from typing import TypeVar
 
 
-class Role(str, enum.Enum):
+class Role(str, enum.Enum):  # noqa: UP042
     ADMIN = "ADMIN"
     USER = "USER"
 

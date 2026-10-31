@@ -4,11 +4,16 @@ from fastapi import FastAPI
 from scalar_fastapi import AgentScalarConfig, get_scalar_api_reference
 
 from app.api import router as v1_router
+from app.bootstrap import bootstrap_from_env, validate_http_bootstrap
 from app.config import settings
+from app.database import AsyncSessionLocal
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    validate_http_bootstrap()
+    async with AsyncSessionLocal() as db:
+        await bootstrap_from_env(db)
     yield
 
 
