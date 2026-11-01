@@ -12,15 +12,22 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.contracts import LoginRequest, TokenPair, UserCreate
 from app.hash import hash_password, verify_password
-from app.models import RefreshToken, RevokeReasonEnum, User
+from app.models import (
+    RefreshToken,
+    RevokeReasonEnum,
+    Role as DbRole,
+    User,
+    UserRole,
+)
 from app.redis_store import token_store
+from app.roles import Role
+from app.security import create_access_token, decode_access_token
 from app.tokens import (
     generate_token,
     get_last_verification_token,
     send_email_verification,
 )
 
-ACCESS_TOKEN_LIFETIME = timedelta(minutes=15)
 REFRESH_TOKEN_LIFETIME = timedelta(days=7)
 
 
@@ -36,20 +43,6 @@ def _hash_refresh_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
-def _create_access_token(user_id: uuid.UUID) -> str:
-    now = datetime.now(UTC)
-    payload = {
-        "user": str(user_id),
-        "type": "access",
-        "jti": str(uuid.uuid4()),
-        "iat": int(now.timestamp()),
-        "exp": int((now + ACCESS_TOKEN_LIFETIME).timestamp()),
-    }
-    return jwt.encode(
-        payload, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM
-    )
-
-
 def _base64url_encode(value: bytes) -> str:
     return base64.urlsafe_b64encode(value).rstrip(b"=").decode("ascii")
 
@@ -57,6 +50,21 @@ def _base64url_encode(value: bytes) -> str:
 def _request_metadata(request: Request) -> tuple[str | None, str | None]:
     client_ip = request.client.host if request.client else None
     return client_ip, request.headers.get("user-agent")
+
+
+async def get_user_role_names(db: AsyncSession, user_id: uuid.UUID) -> list[str]:
+    """Return a user's role names.
+
+    Queries instead of reading user.roles: lazy-loading a relationship on an
+    async session raises MissingGreenlet.
+    """
+    result = await db.scalars(
+        select(DbRole.name)
+        .join(UserRole, UserRole.role_id == DbRole.id)
+        .where(UserRole.user_id == user_id)
+        .order_by(DbRole.name)
+    )
+    return list(result.all())
 
 
 async def _issue_token_pair(
@@ -97,8 +105,12 @@ async def _issue_token_pair(
         ttl_seconds=int(REFRESH_TOKEN_LIFETIME.total_seconds()),
     )
 
+    role_names = await get_user_role_names(db, user.id)
+
     return TokenPair(
-        access_token=_create_access_token(user.id), refresh_token=raw_refresh_token
+        access_token=create_access_token(user.id, [Role(name) for name in role_names]),
+        refresh_token=raw_refresh_token,
+        expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
     )
 
 
@@ -113,10 +125,19 @@ async def create_new_user(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Email already registered"
         )
 
+    # Load the default role (seeded by the migration)
+    default_role = await db.scalar(select(DbRole).where(DbRole.name == Role.USER.value))
+    if default_role is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Default role is not configured",
+        )
+
     new_user = User(
         email=user.email,
         password_hash=hash_password(user.password),
         is_verified=False,
+        roles=[default_role],
     )
 
     db.add(new_user)
@@ -258,6 +279,37 @@ async def login(
     return tokens
 
 
+async def revoke_all_sessions(
+    db: AsyncSession,
+    user_id: uuid.UUID,
+    reason: RevokeReasonEnum = RevokeReasonEnum.logout_all,
+) -> None:
+    """Revoke every session for a user in Redis and in refresh_tokens.
+
+    Redis goes first because it is what blocks requests: if the DB step fails,
+    the user is still locked out. Rows that are already revoked are left alone
+    so they keep their original reason and timestamp. Commits the session.
+    """
+    await token_store.revoke_user_sessions(
+        str(user_id),
+        access_token_ttl=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+    )
+    await db.execute(
+        update(RefreshToken)
+        .where(
+            RefreshToken.user_id == user_id,
+            RefreshToken.is_revoked.is_(False),
+            RefreshToken.revoked_at.is_(None),
+        )
+        .values(
+            is_revoked=True,
+            revoked_at=datetime.now(UTC),
+            revoke_reason=reason,
+        )
+    )
+    await db.commit()
+
+
 async def refresh_token(
     db: AsyncSession, raw_refresh_token: str, request: Request
 ) -> TokenPair:
@@ -265,27 +317,15 @@ async def refresh_token(
 
     # 1. Reuse detection via Redis
     if await token_store.is_token_used(token_hash):
-        # A rotated token was presented again! Invalidate all Redis sessions for user.
+        # A rotated token was presented again! Invalidate all sessions for user.
         result = await db.execute(
             select(RefreshToken).where(RefreshToken.token_hash == token_hash)
         )
         db_token = result.scalars().first()
         if db_token:
-            await token_store.revoke_user_sessions(str(db_token.user_id))
-            await db.execute(
-                update(RefreshToken)
-                .where(
-                    RefreshToken.user_id == db_token.user_id,
-                    RefreshToken.is_revoked.is_(False),
-                    RefreshToken.revoked_at.is_(None),
-                )
-                .values(
-                    is_revoked=True,
-                    revoked_at=datetime.now(UTC),
-                    revoke_reason=RevokeReasonEnum.token_reuse,
-                )
+            await revoke_all_sessions(
+                db, db_token.user_id, RevokeReasonEnum.token_reuse
             )
-            await db.commit()
         raise _unauthorized()
 
     # 2. Retrieve session from Redis
@@ -297,21 +337,9 @@ async def refresh_token(
         )
         db_token = result.scalars().first()
         if db_token and (db_token.is_revoked or db_token.revoked_at is not None):
-            await token_store.revoke_user_sessions(str(db_token.user_id))
-            await db.execute(
-                update(RefreshToken)
-                .where(
-                    RefreshToken.user_id == db_token.user_id,
-                    RefreshToken.is_revoked.is_(False),
-                    RefreshToken.revoked_at.is_(None),
-                )
-                .values(
-                    is_revoked=True,
-                    revoked_at=datetime.now(UTC),
-                    revoke_reason=RevokeReasonEnum.token_reuse,
-                )
+            await revoke_all_sessions(
+                db, db_token.user_id, RevokeReasonEnum.token_reuse
             )
-            await db.commit()
         raise _unauthorized()
 
     user_id = uuid.UUID(session_data["user_id"])
@@ -352,6 +380,22 @@ async def refresh_token(
     return tokens
 
 
+async def revoke_access_token(access_token: str) -> None:
+    """Blocklist one access token so it stops working before it expires."""
+    try:
+        payload = decode_access_token(access_token)
+    except jwt.PyJWTError:
+        return  # already expired or invalid: nothing left to revoke
+
+    jti = payload.get("jti")
+    exp = payload.get("exp")
+    if not jti or not exp:
+        return  # nothing identifiable to revoke
+
+    ttl = max(int(exp - datetime.now(UTC).timestamp()), 1)
+    await token_store.revoke_access_token(jti, ttl)
+
+
 async def logout(db: AsyncSession, raw_refresh_token: str) -> None:
     token_hash = _hash_refresh_token(raw_refresh_token)
 
@@ -379,4 +423,3 @@ async def logout(db: AsyncSession, raw_refresh_token: str) -> None:
     if db_token and not db_token.is_revoked:
         db_token.revoke(RevokeReasonEnum.logout)
         await db.commit()
-
