@@ -28,6 +28,7 @@ async def create_user(
     user: contracts.UserCreate,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[CurrentUser, Depends(RolesGuard())],
+    request: Request,
 ):
     host_url = str(request.base_url) if request else None
     return await create_new_user(db, user, host_url=host_url)
