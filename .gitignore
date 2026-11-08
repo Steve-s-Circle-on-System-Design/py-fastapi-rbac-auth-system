@@ -13,7 +13,7 @@ __pycache__/
 
 .ruff_cache/
 .bandit/
-
+.agent/
 .pytest_cache/
 .coverage
 htmlcov/
