@@ -1,19 +1,17 @@
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.12.8 
+    rev: v0.15.20
     hooks:
-      - id: ruff
-        args: [ --fix ]
+      - id: ruff-check
+        args: [--fix]
       - id: ruff-format
 
-  
-  - repo: https://github.com
-    rev: 1.8.2 
+  - repo: https://github.com/PyCQA/bandit
+    rev: 1.9.4
     hooks:
       - id: bandit
-        args: ["-r", "-lll", "app/"] 
+        args: ["-lll"]
 
-  
   - repo: local
     hooks:
       - id: uv-audit

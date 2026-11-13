@@ -2,23 +2,24 @@ import asyncio
 from urllib.parse import urlparse
 
 import asyncpg
+import fakeredis.aioredis as fakeredis
 import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
-import fakeredis.aioredis as fakeredis
-
 import app.models  # noqa: F401  (registers all tables on Base.metadata)
 from app.config import settings
 from app.database import Base
+from app.models import Role
 from app.redis_store import set_redis_client
+from app.roles import Role as AppRole
 
 # Tests run against a dedicated database, never the dev database the app
 # points at. conftest swaps the database name in DATABASE_URL and creates the
 # database on the fly, so the `drop_all`/`create_all` cycle below can't destroy
 # local data.
-TEST_DATABASE_NAME = "fastapi_db_test"
+TEST_DATABASE_NAME = "RBAC_db_test"
 
 
 def _test_database_url() -> str:
@@ -76,6 +77,9 @@ async def prepared_database():
     async with test_engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
+    async with TestSessionLocal() as session:
+        session.add_all([Role(name=role.value) for role in AppRole])
+        await session.commit()
     yield
     async with test_engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
@@ -101,4 +105,3 @@ def client(prepared_database, redis_client):
     app.dependency_overrides[get_db] = _override_get_db
     yield TestClient(app)
     app.dependency_overrides.pop(get_db, None)
-

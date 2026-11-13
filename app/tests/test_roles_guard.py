@@ -13,7 +13,7 @@ client = TestClient(app)
 
 
 def auth_headers(role: UserRole) -> dict[str, str]:
-    token = create_access_token(user_id=uuid.uuid4(), role=role)
+    token = create_access_token(user_id=uuid.uuid4(), roles=[role])
     return {"Authorization": f"Bearer {token}"}
 
 
@@ -26,7 +26,10 @@ def test_admin_can_access_admin_endpoint():
 def test_standard_user_is_forbidden():
     response = client.get("/admin/dashboard", headers=auth_headers(UserRole.USER))
     assert response.status_code == 403
-    assert response.json()["detail"] == "You do not have permission to access this resource."
+    assert (
+        response.json()["detail"]
+        == "You do not have permission to access this resource."
+    )
 
 
 def test_no_token_is_unauthorized():

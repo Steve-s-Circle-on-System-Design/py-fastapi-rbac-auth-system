@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: rbac
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/rbac
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # psycopg2 (non-binary) compiles from source and needs libpq headers.
+      - name: Install libpq headers
+        run: sudo apt-get update && sudo apt-get install -y libpq-dev
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Lint
+        run: uv run ruff check
+
+      - name: Apply migrations
+        run: uv run alembic upgrade head
+
+      - name: Check migrations match the models
+        run: uv run alembic check
+
+      - name: Test
+        run: uv run pytest

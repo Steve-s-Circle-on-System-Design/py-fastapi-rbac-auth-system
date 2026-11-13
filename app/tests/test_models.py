@@ -1,6 +1,7 @@
 from datetime import UTC, datetime
 
 import pytest
+from sqlalchemy import select
 
 from app.models import (
     AuditLog,
@@ -17,6 +18,7 @@ from app.models import (
     VerificationToken,
     VerificationTokenType,
 )
+from app.roles import Role as AppRole
 
 
 def test_enum_values():
@@ -112,3 +114,9 @@ def test_email_log_records_error_message():
     log.update_status(EmailStatusEnum.failed, "smtp down")
     assert log.status == EmailStatusEnum.failed
     assert log.error_message == "smtp down"
+
+
+@pytest.mark.asyncio
+async def test_default_roles_are_seeded(db_session):
+    names = set((await db_session.scalars(select(Role.name))).all())
+    assert names == {role.value for role in AppRole}
